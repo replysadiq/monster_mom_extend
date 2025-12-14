@@ -154,7 +154,8 @@ def compute_stock_features(stocks: pd.DataFrame, index: pd.DataFrame) -> pd.Data
     # Donchian position
     roll_high_20 = _group_roll(df["high"], 20, "max")
     roll_low_20 = _group_roll(df["low"], 20, "min")
-    df["donchian_pos_20"] = (df["close"] - roll_low_20) / (roll_high_20 - roll_low_20)
+    denom = roll_high_20 - roll_low_20
+    df["donchian_pos_20"] = np.where(denom == 0, np.nan, (df["close"] - roll_low_20) / denom)
 
     # SuperTrend state (10,3)
     def _supertrend(group: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> pd.Series:
@@ -202,7 +203,7 @@ def compute_stock_features(stocks: pd.DataFrame, index: pd.DataFrame) -> pd.Data
 
     # EMA slope
     ema20 = _group_ewm(df["close"], 20)
-    df["ema_slope_20d"] = ema20.pct_change(5)
+    df["ema_slope_20d"] = ema20.groupby(level=0).pct_change(5)
 
     # Volatility metrics
     df["hist_vol_20d"] = df.groupby(level=0)["ret_1d"].transform(
@@ -265,7 +266,7 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
 
     # Weekly close for forward returns
     weekly_close = weekly_panel["close"]
-    weekly_panel["fwd_4w_ret"] = weekly_close.groupby(level=0).pct_change(-4)
+    weekly_panel["fwd_4w_ret"] = weekly_close.groupby(level=0).shift(-4) / weekly_close - 1
 
     # Index weekly close and forward return
     index_weekly = (
@@ -274,7 +275,7 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
         .groupby("week_date")
         .last()
     )
-    index_weekly["fwd_4w_ret_index"] = index_weekly["index_close"].pct_change(-4)
+    index_weekly["fwd_4w_ret_index"] = index_weekly["index_close"].shift(-4) / index_weekly["index_close"] - 1
 
     weekly_panel = weekly_panel.join(index_weekly["fwd_4w_ret_index"], on="week_date")
     weekly_panel["target_forward_4w_excess"] = weekly_panel["fwd_4w_ret"] - weekly_panel["fwd_4w_ret_index"]
