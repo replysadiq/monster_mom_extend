@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
     parser.add_argument("--out_features", type=Path, default=DEFAULT_OUT_FEATURES)
     parser.add_argument("--out_report", type=Path, default=DEFAULT_OUT_REPORT)
+    parser.add_argument("--start", type=str, default=None, help="Start date (YYYY-MM-DD), optional.")
+    parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD), optional.")
     parser.add_argument("--min_weeks_ratio", type=float, default=0.70)
     parser.add_argument("--min_abs_marginal_t", type=float, default=2.0)
     parser.add_argument("--min_hit_rate", type=float, default=0.55)
@@ -217,6 +219,13 @@ def write_outputs(decisions: List[Decision], out_features: Path, out_report: Pat
 def main() -> None:
     args = parse_args()
     df = pd.read_csv(args.summary)
+    # Override outputs with period suffix if start/end provided
+    out_features = args.out_features
+    out_report = args.out_report
+    if args.start and args.end:
+        out_features = Path(f"data/frozen_features_{args.start}_{args.end}.txt")
+        out_report = Path(f"data/frozen_features_report_{args.start}_{args.end}.csv")
+
     required_cols = {
         "group",
         "feature",
@@ -236,7 +245,7 @@ def main() -> None:
         raise ValueError(f"Summary file missing required columns: {missing}")
 
     decisions = select_features(df, args)
-    write_outputs(decisions, args.out_features, args.out_report)
+    write_outputs(decisions, out_features, out_report)
 
 
 if __name__ == "__main__":

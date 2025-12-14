@@ -273,12 +273,20 @@ def main() -> None:
         default=Path("data/incremental_ic_summary.csv"),
         help="Where to write the summary CSV.",
     )
+    parser.add_argument("--start", type=str, default=None, help="Start date (YYYY-MM-DD), optional.")
+    parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD), optional.")
     args = parser.parse_args()
 
     df = pd.read_parquet(args.data)
     if "week_date" not in df.index.names:
         raise ValueError("Expected week_date in index; ensure data is indexed by (symbol, week_date).")
     df = df.reset_index()  # easier grouping on week_date
+    if args.start:
+        start = pd.to_datetime(args.start)
+        df = df[df["week_date"] >= start]
+    if args.end:
+        end = pd.to_datetime(args.end)
+        df = df[df["week_date"] <= end]
 
     groups = default_groups()
     results = run_analysis(df, groups, target=TARGET_COL)

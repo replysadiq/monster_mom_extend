@@ -1,6 +1,9 @@
+import argparse
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
 
 
 DATA_DIR = Path("data")
@@ -27,14 +30,24 @@ def _group_ewm(series: pd.Series, span: int) -> pd.Series:
     )
 
 
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load stock and index data."""
+def load_data(
+    start: Optional[pd.Timestamp] = None, end: Optional[pd.Timestamp] = None
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load stock and index data, optionally date-filtered."""
     stocks = pd.read_parquet(OHLVC_PATH)
     stocks["date"] = pd.to_datetime(stocks["date"])
+    if start is not None:
+        stocks = stocks[stocks["date"] >= start]
+    if end is not None:
+        stocks = stocks[stocks["date"] <= end]
     stocks = stocks.sort_values(["symbol", "date"]).set_index(["symbol", "date"])
 
     index = pd.read_csv(INDEX_PATH)
     index["date"] = pd.to_datetime(index["date"])
+    if start is not None:
+        index = index[index["date"] >= start]
+    if end is not None:
+        index = index[index["date"] <= end]
     index = index.sort_values("date").set_index("date")
     index.rename(columns={"close": "index_close"}, inplace=True)
     return stocks, index
@@ -307,14 +320,31 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
     return weekly_panel
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Build weekly feature panel.")
+    parser.add_argument("--start", type=str, default=None, help="Start date (YYYY-MM-DD), inclusive.")
+    parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD), inclusive.")
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=OUTPUT_PATH,
+        help="Output parquet path for weekly features.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    stocks, index = load_data()
+    args = parse_args()
+    start = pd.to_datetime(args.start) if args.start else None
+    end = pd.to_datetime(args.end) if args.end else None
+
+    stocks, index = load_data(start=start, end=end)
     index_feat = compute_index_features(index)
     daily_feat = compute_stock_features(stocks, index_feat)
     weekly = build_weekly_panel(daily_feat, index_feat)
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    weekly.to_parquet(OUTPUT_PATH)
-    print(f"Weekly feature panel saved to {OUTPUT_PATH} with shape {weekly.shape}")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    weekly.to_parquet(args.out)
+    print(f"Weekly feature panel saved to {args.out} with shape {weekly.shape}")
 
 
 if __name__ == "__main__":
