@@ -32,14 +32,29 @@ class FeatureResult:
     feature: str
     group: str
     marginal_ic: float
+    marginal_std: float
+    marginal_t: float
+    marginal_hit_rate: float
+    marginal_n_weeks: int
     base_feature: str
     base_ic: float
+    base_n_weeks: int
     corr_with_base: float
     incremental_ic_vs_base: float
+    incremental_std: float
+    incremental_t: float
+    incremental_hit_rate: float
+    incremental_n_weeks: int
 
 
-def marginal_ic(df: pd.DataFrame, feature: str, target: str) -> float:
-    """Mean weekly Spearman IC for feature vs target."""
+def _tstat(mean: float, std: float, n: int) -> float:
+    if std == 0 or n == 0:
+        return float("nan")
+    return mean / std * np.sqrt(n)
+
+
+def marginal_ic(df: pd.DataFrame, feature: str, target: str) -> Tuple[float, float, float, int]:
+    """Mean weekly Spearman IC for feature vs target, with stability stats."""
     ics: List[float] = []
     for _, g in df[["week_date", feature, target]].dropna().groupby("week_date"):
         if len(g) < MIN_CROSS_SECTION:
@@ -48,40 +63,59 @@ def marginal_ic(df: pd.DataFrame, feature: str, target: str) -> float:
         if np.isnan(ic):
             continue
         ics.append(ic)
-    return float(np.nanmean(ics)) if ics else float("nan")
+    if not ics:
+        return float("nan"), float("nan"), float("nan"), 0
+    arr = np.array(ics)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=0))
+    tstat = _tstat(mean, std, len(arr))
+    return mean, std, tstat, len(arr)
 
 
-def incremental_ic(df: pd.DataFrame, x_col: str, y_col: str, target: str) -> float:
-    """Mean weekly incremental IC of y given x."""
+def incremental_ic(
+    df: pd.DataFrame, x_col: str, y_col: str, target: str
+) -> Tuple[float, float, float, int]:
+    """Mean weekly incremental IC of y given x, with stability stats."""
     ics: List[float] = []
     for _, g in df[["week_date", x_col, y_col, target]].dropna().groupby("week_date"):
         if len(g) < MIN_CROSS_SECTION:
             continue
-        x = g[x_col].rank()
-        y = g[y_col].rank()
-        t = g[target].rank()
+        x = g[x_col].rank().to_numpy()
+        y = g[y_col].rank().to_numpy()
+        t = g[target].rank().to_numpy()
 
-        varx = np.var(x, ddof=0)
+        x = x - x.mean()
+        y = y - y.mean()
+        varx = x.var()
         if varx == 0:
             continue
-        cov_xy = np.cov(x, y, ddof=0)[0, 1]
-        beta = cov_xy / varx
+        beta = (x * y).mean() / varx
         y_resid = y - beta * x
 
         ic, _ = spearmanr(y_resid, t)
         if np.isnan(ic):
             continue
         ics.append(ic)
-    return float(np.nanmean(ics)) if ics else float("nan")
+    if not ics:
+        return float("nan"), float("nan"), float("nan"), 0
+    arr = np.array(ics)
+    mean = float(arr.mean())
+    std = float(arr.std(ddof=0))
+    tstat = _tstat(mean, std, len(arr))
+    return mean, std, tstat, len(arr)
 
 
-def pair_corr(df: pd.DataFrame, a: str, b: str) -> float:
-    """Overall Spearman correlation between two features across all rows (fast sanity check)."""
-    s = df[[a, b]].dropna()
-    if s.empty:
-        return float("nan")
-    corr, _ = spearmanr(s[a], s[b])
-    return float(corr)
+def mean_weekly_corr(df: pd.DataFrame, a: str, b: str) -> float:
+    """Mean weekly cross-sectional Spearman correlation between two features."""
+    cors: List[float] = []
+    for _, g in df[["week_date", a, b]].dropna().groupby("week_date"):
+        if len(g) < MIN_CROSS_SECTION:
+            continue
+        c, _ = spearmanr(g[a], g[b])
+        if np.isnan(c):
+            continue
+        cors.append(c)
+    return float(np.nanmean(cors)) if cors else float("nan")
 
 
 def run_analysis(
@@ -90,32 +124,85 @@ def run_analysis(
     results: List[FeatureResult] = []
 
     # Precompute marginal ICs
-    marginals = {feat: marginal_ic(df, feat, target) for feats in groups.values() for feat in feats}
+    marginals = {
+        feat: marginal_ic(df, feat, target)
+        for feats in groups.values()
+        for feat in feats
+    }
 
     for group, feats in groups.items():
         feats = list(feats)
         if not feats:
             continue
-        # Choose base as highest marginal IC within group
-        base_feature = max(feats, key=lambda f: marginals.get(f, float("-inf")))
-        base_ic = marginals.get(base_feature, float("nan"))
+        valid = [f for f in feats if np.isfinite(marginals.get(f, (np.nan,))[0])]
+        if not valid:
+            continue
+        # Choose base as highest marginal IC within group (simple heuristic)
+        base_feature = max(valid, key=lambda f: marginals[f][0])
+        base_ic, base_std, base_t, base_n = marginals[base_feature]
 
         for feat in feats:
-            corr = pair_corr(df, base_feature, feat) if feat != base_feature else 1.0
-            inc_ic = (
-                incremental_ic(df, base_feature, feat, target)
-                if feat != base_feature
-                else float("nan")
-            )
+            corr = mean_weekly_corr(df, base_feature, feat) if feat != base_feature else 1.0
+            if feat != base_feature:
+                inc_mean, inc_std, inc_t, inc_n = incremental_ic(df, base_feature, feat, target)
+            else:
+                inc_mean = inc_std = inc_t = float("nan")
+                inc_n = 0
+            marg_mean, marg_std, marg_t, marg_n = marginals[feat]
+            # Compute hit rates (fraction of positive weekly ICs) for marginal and incremental
+            marg_hit = float("nan")
+            if marg_n > 0:
+                weekly_marg_ics = []
+                for _, g in df[["week_date", feat, target]].dropna().groupby("week_date"):
+                    if len(g) < MIN_CROSS_SECTION:
+                        continue
+                    ic, _ = spearmanr(g[feat], g[target])
+                    if np.isnan(ic):
+                        continue
+                    weekly_marg_ics.append(ic)
+                if weekly_marg_ics:
+                    marg_hit = float(np.mean(np.array(weekly_marg_ics) > 0))
+
+            inc_hit = float("nan")
+            if inc_n > 0 and feat != base_feature:
+                weekly_inc_ics = []
+                for _, g in df[["week_date", base_feature, feat, target]].dropna().groupby("week_date"):
+                    if len(g) < MIN_CROSS_SECTION:
+                        continue
+                    x = g[base_feature].rank().to_numpy()
+                    y = g[feat].rank().to_numpy()
+                    t = g[target].rank().to_numpy()
+                    x = x - x.mean()
+                    y = y - y.mean()
+                    varx = x.var()
+                    if varx == 0:
+                        continue
+                    beta = (x * y).mean() / varx
+                    y_resid = y - beta * x
+                    ic, _ = spearmanr(y_resid, t)
+                    if np.isnan(ic):
+                        continue
+                    weekly_inc_ics.append(ic)
+                if weekly_inc_ics:
+                    inc_hit = float(np.mean(np.array(weekly_inc_ics) > 0))
             results.append(
                 FeatureResult(
                     feature=feat,
                     group=group,
-                    marginal_ic=marginals.get(feat, float("nan")),
+                    marginal_ic=marg_mean,
+                    marginal_std=marg_std,
+                    marginal_t=marg_t,
+                    marginal_hit_rate=marg_hit,
+                    marginal_n_weeks=marg_n,
                     base_feature=base_feature,
                     base_ic=base_ic,
+                    base_n_weeks=base_n,
                     corr_with_base=corr,
-                    incremental_ic_vs_base=inc_ic,
+                    incremental_ic_vs_base=inc_mean,
+                    incremental_std=inc_std,
+                    incremental_t=inc_t,
+                    incremental_hit_rate=inc_hit,
+                    incremental_n_weeks=inc_n,
                 )
             )
     return results
