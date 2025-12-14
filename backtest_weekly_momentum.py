@@ -1,0 +1,371 @@
+"""
+Weekly momentum backtester (Nifty 500 style) with frozen feature list.
+
+Features:
+- Weekly rebalance on W-FRI, execution at next open or Friday close.
+- Universe filter by ADV.
+- Ranking by frozen features (ret_12m, ret_8w) with optional trend gate.
+- Equal-weight or ATR-inverse sizing.
+- Costs: commission_bps, slippage_bps, optional impact_bps=k/sqrt(adv_60d).
+- Outputs equity curve, trades, holdings, summary metrics.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from build_weekly_dataset import (
+    build_weekly_panel,
+    compute_index_features,
+    compute_stock_features,
+    load_data,
+)
+
+
+RESULTS_DIR = Path("results")
+
+
+@dataclass
+class Config:
+    start: Optional[pd.Timestamp]
+    end: Optional[pd.Timestamp]
+    initial_capital: float
+    top_n: int
+    min_adv: float
+    w12m: float
+    w8w: float
+    trend_gate: str  # none | 200d | 50d_200d
+    sizing: str  # equal | atr_inverse
+    commission_bps: float
+    slippage_bps: float
+    impact_k: Optional[float]
+    execution: str  # next_open | friday_close
+    features_path: Optional[Path]
+    frozen_features_path: Path
+    out_prefix: str
+
+
+def load_ohlcv(path: Path) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.sort_values(["symbol", "date"]).set_index(["symbol", "date"])
+    return df
+
+
+def load_index(path: Path, start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> pd.DataFrame:
+    idx = pd.read_csv(path)
+    idx["date"] = pd.to_datetime(idx["date"])
+    if start is not None:
+        idx = idx[idx["date"] >= start]
+    if end is not None:
+        idx = idx[idx["date"] <= end]
+    return idx.sort_values("date").set_index("date")
+
+
+def get_weekly_features(cfg: Config) -> pd.DataFrame:
+    if cfg.features_path:
+        weekly = pd.read_parquet(cfg.features_path)
+        return weekly
+    stocks, index = load_data(start=cfg.start, end=cfg.end)
+    index_feat = compute_index_features(index)
+    daily_feat = compute_stock_features(stocks, index_feat)
+    weekly = build_weekly_panel(daily_feat, index_feat)
+    return weekly
+
+
+def compute_rebalance_dates(features: pd.DataFrame, start: Optional[pd.Timestamp], end: Optional[pd.Timestamp]) -> List[pd.Timestamp]:
+    dates = features.index.get_level_values("week_date").unique()
+    if start is not None:
+        dates = dates[dates >= start]
+    if end is not None:
+        dates = dates[dates <= end]
+    return sorted(dates)
+
+
+def load_frozen_features(path: Path) -> List[str]:
+    with path.open() as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def select_portfolio(
+    week_df: pd.DataFrame,
+    cfg: Config,
+    frozen_features: List[str],
+) -> pd.DataFrame:
+    df = week_df.copy()
+    df = df[df["adv_60d"] >= cfg.min_adv]
+    if cfg.trend_gate == "200d":
+        df = df[df["pct_above_200d_sma"] > 0]
+    elif cfg.trend_gate == "50d_200d":
+        df = df[(df["pct_above_200d_sma"] > 0) & (df["pct_above_50d_sma"] > 0)]
+
+    if df.empty:
+        return pd.DataFrame(columns=["symbol", "score"])
+
+    # Score using frozen features ret_12m and ret_8w weights
+    for feat in ["ret_12m", "ret_8w"]:
+        if feat not in frozen_features:
+            raise ValueError(f"Required feature {feat} not found in frozen feature list")
+    df["score"] = (
+        df["ret_12m"].rank(pct=True) * cfg.w12m + df["ret_8w"].rank(pct=True) * cfg.w8w
+    )
+    top = df.nlargest(cfg.top_n, "score")
+    return top[["score"]]
+
+
+def get_execution_prices(
+    ohlcv: pd.DataFrame, symbols: List[str], rebalance_date: pd.Timestamp, execution: str
+) -> Dict[str, float]:
+    prices: Dict[str, float] = {}
+    for sym in symbols:
+        data = ohlcv.xs(sym, level=0)
+        if execution == "friday_close":
+            row = data[data.index == rebalance_date]
+            if not row.empty:
+                prices[sym] = float(row["close"].iloc[0])
+        else:
+            row = data[data.index > rebalance_date].head(1)
+            if not row.empty:
+                prices[sym] = float(row["open"].iloc[0])
+    return prices
+
+
+def sizing_weights(sel: pd.DataFrame, cfg: Config) -> pd.Series:
+    if cfg.sizing == "equal":
+        return pd.Series(1.0 / len(sel), index=sel.index)
+    if cfg.sizing == "atr_inverse":
+        if "atr_pct_14" not in sel.columns:
+            raise ValueError("atr_pct_14 required for atr_inverse sizing")
+        inv = 1.0 / sel["atr_pct_14"].replace(0, np.nan)
+        inv = inv.fillna(0)
+        total = inv.sum()
+        if total == 0:
+            return pd.Series(1.0 / len(sel), index=sel.index)
+        return inv / total
+    raise ValueError(f"Unknown sizing {cfg.sizing}")
+
+
+def simulate(
+    features: pd.DataFrame,
+    ohlcv: pd.DataFrame,
+    cfg: Config,
+    frozen_features: List[str],
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    rebalance_dates = compute_rebalance_dates(features, cfg.start, cfg.end)
+    portfolio_value = cfg.initial_capital
+    cash = cfg.initial_capital
+    holdings: Dict[str, float] = {}
+
+    equity_records = []
+    trade_records = []
+    holding_records = []
+
+    for reb_date in rebalance_dates:
+        week_slice = features.xs(reb_date, level="week_date")
+        selection = select_portfolio(week_slice, cfg, frozen_features)
+        if selection.empty:
+            # record equity unchanged
+            equity_records.append(
+                {
+                    "date": reb_date,
+                    "portfolio_value": portfolio_value,
+                    "return": 0.0,
+                }
+            )
+            continue
+
+        sel_df = week_slice.loc[selection.index]
+        weights = sizing_weights(sel_df, cfg)
+        exec_prices = get_execution_prices(ohlcv, list(selection.index), reb_date, cfg.execution)
+
+        # Value existing holdings at exec prices
+        mark_value = 0.0
+        for sym, qty in holdings.items():
+            if (sym, reb_date) in ohlcv.index:
+                price = float(ohlcv.loc[(sym, reb_date), "close"])
+            else:
+                # fallback to last available before rebalance
+                data = ohlcv.xs(sym, level=0)
+                prev = data[data.index <= reb_date].tail(1)
+                if prev.empty:
+                    continue
+                price = float(prev["close"].iloc[0])
+            mark_value += qty * price
+        portfolio_value = cash + mark_value
+
+        # Target positions
+        desired = {}
+        for sym, w in weights.items():
+            if sym not in exec_prices:
+                continue
+            price = exec_prices[sym]
+            notional = portfolio_value * w
+            qty = notional / price
+            desired[sym] = qty
+
+        # Trades
+        new_holdings: Dict[str, float] = {}
+        total_costs = 0.0
+        for sym, tgt_qty in desired.items():
+            curr_qty = holdings.get(sym, 0.0)
+            trade_qty = tgt_qty - curr_qty
+            if sym not in exec_prices:
+                continue
+            price = exec_prices[sym]
+            notional = abs(trade_qty) * price
+            if notional == 0:
+                new_holdings[sym] = tgt_qty
+                continue
+            comm = cfg.commission_bps / 1e4 * notional
+            slip = cfg.slippage_bps / 1e4 * notional
+            impact = 0.0
+            if cfg.impact_k is not None and cfg.impact_k > 0:
+                adv = week_slice.loc[sym, "adv_60d"]
+                if adv > 0:
+                    impact = (cfg.impact_k / np.sqrt(adv)) * notional / 1e4
+            cost = comm + slip + impact
+            total_costs += cost
+            cash -= trade_qty * price + cost
+            side = "buy" if trade_qty > 0 else "sell"
+            trade_records.append(
+                {
+                    "rebalance_date": reb_date,
+                    "symbol": sym,
+                    "side": side,
+                    "qty": trade_qty,
+                    "price": price,
+                    "notional": trade_qty * price,
+                    "costs": cost,
+                }
+            )
+            new_holdings[sym] = tgt_qty
+
+        holdings = new_holdings
+
+        # Update mark-to-market after trades
+        mtm = 0.0
+        for sym, qty in holdings.items():
+            price = exec_prices.get(sym)
+            if price is None:
+                continue
+            mtm += qty * price
+        portfolio_value = cash + mtm
+
+        equity_records.append(
+            {
+                "date": reb_date,
+                "portfolio_value": portfolio_value,
+                "return": 0.0,  # compute later
+            }
+        )
+        for sym, w in weights.items():
+            holding_records.append(
+                {"rebalance_date": reb_date, "symbol": sym, "weight": w}
+            )
+
+    equity_df = pd.DataFrame(equity_records).sort_values("date").reset_index(drop=True)
+    equity_df["return"] = equity_df["portfolio_value"].pct_change().fillna(0.0)
+    equity_df["cum_return"] = (1 + equity_df["return"]).cumprod()
+    peak = equity_df["cum_return"].cummax()
+    equity_df["drawdown"] = equity_df["cum_return"] / peak - 1
+
+    trades_df = pd.DataFrame(trade_records)
+    holdings_df = pd.DataFrame(holding_records)
+    return equity_df, trades_df, holdings_df
+
+
+def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame, cfg: Config) -> Dict[str, float]:
+    rets = equity["return"]
+    weeks_per_year = 52
+    ann_ret = (1 + rets).prod() ** (weeks_per_year / max(len(rets), 1)) - 1
+    ann_vol = rets.std(ddof=0) * np.sqrt(weeks_per_year)
+    sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
+    max_dd = equity["drawdown"].min()
+    calmar = -ann_ret / max_dd if max_dd < 0 else np.nan
+    turnover = trades["notional"].abs().sum() / (cfg.initial_capital * max(len(equity), 1))
+    win_rate = (rets > 0).mean()
+    exposure = 1.0  # fully invested by design
+    return {
+        "CAGR": ann_ret,
+        "annual_vol": ann_vol,
+        "sharpe": sharpe,
+        "max_drawdown": max_dd,
+        "calmar": calmar,
+        "turnover": turnover,
+        "win_rate_weekly": win_rate,
+        "exposure": exposure,
+    }
+
+
+def parse_args() -> Config:
+    ap = argparse.ArgumentParser(description="Weekly momentum backtest")
+    ap.add_argument("--start", type=str, required=True)
+    ap.add_argument("--end", type=str, required=True)
+    ap.add_argument("--initial_capital", type=float, default=1_000_000)
+    ap.add_argument("--top_n", type=int, default=10)
+    ap.add_argument("--min_adv", type=float, default=20_000_000)
+    ap.add_argument("--w12m", type=float, default=0.6)
+    ap.add_argument("--w8w", type=float, default=0.4)
+    ap.add_argument("--trend_gate", type=str, default="200d", choices=["none", "200d", "50d_200d"])
+    ap.add_argument("--sizing", type=str, default="equal", choices=["equal", "atr_inverse"])
+    ap.add_argument("--commission_bps", type=float, default=5.0)
+    ap.add_argument("--slippage_bps", type=float, default=10.0)
+    ap.add_argument("--impact_k", type=float, default=0.0, help="Set >0 to enable impact_k/sqrt(adv_60d)")
+    ap.add_argument("--execution", type=str, default="next_open", choices=["next_open", "friday_close"])
+    ap.add_argument("--features", type=Path, default=None, help="Path to precomputed weekly features parquet.")
+    ap.add_argument("--frozen_features", type=Path, required=True, help="Path to frozen features txt.")
+    ap.add_argument("--out_prefix", type=str, default="backtest")
+    args = ap.parse_args()
+    start = pd.to_datetime(args.start)
+    end = pd.to_datetime(args.end)
+    impact_k = args.impact_k if args.impact_k > 0 else None
+    return Config(
+        start=start,
+        end=end,
+        initial_capital=args.initial_capital,
+        top_n=args.top_n,
+        min_adv=args.min_adv,
+        w12m=args.w12m,
+        w8w=args.w8w,
+        trend_gate=args.trend_gate,
+        sizing=args.sizing,
+        commission_bps=args.commission_bps,
+        slippage_bps=args.slippage_bps,
+        impact_k=impact_k,
+        execution=args.execution,
+        features_path=args.features,
+        frozen_features_path=args.frozen_features,
+        out_prefix=args.out_prefix,
+    )
+
+
+def main() -> None:
+    cfg = parse_args()
+    features = get_weekly_features(cfg)
+    ohlcv = load_ohlcv(Path("data/ohlcv.parquet"))
+    frozen = load_frozen_features(cfg.frozen_features_path)
+
+    equity, trades, holdings = simulate(features, ohlcv, cfg, frozen)
+    metrics = compute_metrics(equity, trades, cfg)
+
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    equity.to_csv(RESULTS_DIR / f"{cfg.out_prefix}_equity_curve.csv", index=False)
+    trades.to_csv(RESULTS_DIR / f"{cfg.out_prefix}_trades.csv", index=False)
+    holdings.to_csv(RESULTS_DIR / f"{cfg.out_prefix}_holdings.csv", index=False)
+    with (RESULTS_DIR / f"{cfg.out_prefix}_summary.json").open("w") as f:
+        json.dump(metrics, f, indent=2)
+
+    print("==== Backtest Summary ====")
+    for k, v in metrics.items():
+        print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
+
+
+if __name__ == "__main__":
+    main()

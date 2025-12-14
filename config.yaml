@@ -1,0 +1,16 @@
+start: "2015-09-26"
+end: "2025-10-23"
+initial_capital: 1000000
+top_n: 10
+min_adv: 20000000
+w12m: 0.6
+w8w: 0.4
+trend_gate: "200d"        # options: none, 200d, 50d_200d
+sizing: "equal"           # options: equal, atr_inverse
+commission_bps: 5
+slippage_bps: 10
+impact_k: 0               # set >0 to enable impact cost k/sqrt(adv_60d)
+execution: "next_open"    # options: next_open, friday_close
+features: "data/weekly_features_2015-09-26_2025-10-23.parquet"
+frozen_features: "data/frozen_features_2015-09-26_2025-10-23.txt"
+out_prefix: "backtest"
