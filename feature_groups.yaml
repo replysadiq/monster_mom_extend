@@ -1,0 +1,130 @@
+groups:
+  - feature: ret_1w
+    group: momentum
+    tag: experimental
+    direction: 1
+  - feature: ret_2w
+    group: momentum
+    tag: experimental
+    direction: 1
+  - feature: ret_1m
+    group: momentum
+    tag: core
+    direction: 1
+  - feature: ret_3m
+    group: momentum
+    tag: core
+    direction: 1
+  - feature: ret_6m
+    group: momentum
+    tag: core
+    direction: 1
+  - feature: ret_8w
+    group: momentum
+    tag: core
+    direction: 1
+  - feature: ret_12m
+    group: momentum
+    tag: core
+    direction: 1
+  - feature: excess_ret_3m_vs_index
+    group: momentum
+    tag: experimental
+    direction: 1
+
+  - feature: pct_above_20d_sma
+    group: trend
+    tag: core
+    direction: 1
+  - feature: pct_above_50d_sma
+    group: trend
+    tag: core
+    direction: 1
+  - feature: pct_above_200d_sma
+    group: trend
+    tag: core
+    direction: 1
+  - feature: pct_from_52w_high
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: adx_14
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: macd_hist_12_26_9
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: bollinger_pctb_20_2
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: bollinger_bw_20_2
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: rsi_14
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: donchian_pos_20
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: supertrend_state_10_3
+    group: trend
+    tag: experimental
+    direction: 1
+  - feature: ema_slope_20d
+    group: trend
+    tag: experimental
+    direction: 1
+
+  - feature: atr_pct_14
+    group: volatility
+    tag: core
+    direction: -1
+  - feature: hist_vol_20d
+    group: volatility
+    tag: experimental
+    direction: -1
+  - feature: hist_vol_60d
+    group: volatility
+    tag: experimental
+    direction: -1
+  - feature: gk_vol_20d
+    group: volatility
+    tag: experimental
+    direction: -1
+  - feature: hv_percentile_1y
+    group: volatility
+    tag: experimental
+    direction: -1
+  - feature: beta_60d
+    group: volatility
+    tag: experimental
+    direction: 1
+
+  - feature: adv_20d
+    group: liquidity
+    tag: core
+    direction: 1
+  - feature: adv_60d
+    group: liquidity
+    tag: core
+    direction: 1
+  - feature: adv_median_60d
+    group: liquidity
+    tag: experimental
+    direction: 1
+  - feature: turnover_ratio_20d
+    group: liquidity
+    tag: experimental
+    direction: 1
+  - feature: volume_zscore_20d
+    group: liquidity
+    tag: experimental
+    direction: 1
+
+  # Regime/diagnostic placeholders (none in current panel)
