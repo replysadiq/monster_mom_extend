@@ -279,6 +279,7 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
 
     # Weekly close for forward returns
     weekly_close = weekly_panel["close"]
+    weekly_panel["fwd_1w_ret"] = weekly_close.groupby(level=0).shift(-1) / weekly_close - 1
     weekly_panel["fwd_4w_ret"] = weekly_close.groupby(level=0).shift(-4) / weekly_close - 1
 
     # Index weekly close and forward return
@@ -288,9 +289,12 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
         .groupby("week_date")
         .last()
     )
+    index_weekly["fwd_1w_ret_index"] = index_weekly["index_close"].shift(-1) / index_weekly["index_close"] - 1
     index_weekly["fwd_4w_ret_index"] = index_weekly["index_close"].shift(-4) / index_weekly["index_close"] - 1
 
     weekly_panel = weekly_panel.join(index_weekly["fwd_4w_ret_index"], on="week_date")
+    weekly_panel = weekly_panel.join(index_weekly["fwd_1w_ret_index"], on="week_date")
+    weekly_panel["target_forward_1w_excess"] = weekly_panel["fwd_1w_ret"] - weekly_panel["fwd_1w_ret_index"]
     weekly_panel["target_forward_4w_excess"] = weekly_panel["fwd_4w_ret"] - weekly_panel["fwd_4w_ret_index"]
 
     # Keep relevant columns
@@ -304,6 +308,8 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
             "high",
             "low",
             "volume",
+            "fwd_1w_ret",
+            "fwd_1w_ret_index",
             "fwd_4w_ret",
             "fwd_4w_ret_index",
             "index_close",
