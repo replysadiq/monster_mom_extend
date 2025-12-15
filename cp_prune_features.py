@@ -142,7 +142,7 @@ def train_mapie(
     mapie.conformalize(X_cal, y_cal)
     lower, upper = mapie.predict_interval(X_test)
     widths = upper - lower
-    return float(np.mean(widths))
+    return float(np.median(widths))
 
 
 def compute_deltas(
@@ -159,24 +159,39 @@ def compute_deltas(
     print(f"Window count: {len(windows)}")
     if not windows:
         raise ValueError("No windows constructed; check date range and window lengths.")
-    deltas = {f: [] for f in manifest}
+    deltas: Dict[str, List[float]] = {}
 
     for i, (train_dates, cal_dates, test_dates) in enumerate(windows):
         print(f"Window {i+1}: train {train_dates[0]}->{train_dates[-1]}, cal {cal_dates[0]}->{cal_dates[-1]}, test {test_dates[0]}->{test_dates[-1]}")
-        train_df = df.loc[df.index.get_level_values("week_date").isin(train_dates)]
-        cal_df = df.loc[df.index.get_level_values("week_date").isin(cal_dates)]
-        test_df = df.loc[df.index.get_level_values("week_date").isin(test_dates)]
-
         feats_available = [
             f for f, meta in manifest.items() if meta.group != "regime" and f in df.columns and f != target_col
         ]
+        if not feats_available:
+            raise ValueError("No available non-regime features for LOFO.")
+        window_df = df.loc[
+            df.index.get_level_values("week_date").isin(train_dates + cal_dates + test_dates)
+        ]
+        window_df = window_df.dropna(subset=feats_available + [target_col])
+        train_df = window_df.loc[window_df.index.get_level_values("week_date").isin(train_dates)]
+        cal_df = window_df.loc[window_df.index.get_level_values("week_date").isin(cal_dates)]
+        test_df = window_df.loc[window_df.index.get_level_values("week_date").isin(test_dates)]
+        print(f" n_train={len(train_df)}, n_cal={len(cal_df)}, n_test={len(test_df)}")
 
         base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha)
+        # initialize deltas dict lazily
         for feat in feats_available:
+            deltas.setdefault(feat, [])
+        # Debug: first 3 LOFOs
+        for j, feat in enumerate(feats_available):
             subset = [f for f in feats_available if f != feat]
             w_minus = train_mapie(train_df, cal_df, test_df, subset, target_col, alpha)
-            delta = (w_minus - base_width) / base_width
+            if base_width == 0:
+                delta = np.nan
+            else:
+                delta = (w_minus - base_width) / base_width
             deltas[feat].append(delta)
+            if j < 3:
+                print(f"  LOFO {feat}: base_width={base_width:.6f}, w_minus={w_minus:.6f}, delta={delta:.6f}")
     return deltas
 
 
@@ -255,7 +270,8 @@ def main() -> None:
     manifest = load_manifest(args.manifest)
     df = load_panel(args.features, args.target_col, args.start, args.end, args.smoke)
 
-    required_cols = list(manifest.keys()) + [args.target_col]
+    non_regime_feats = [f for f, meta in manifest.items() if meta.group != "regime"]
+    required_cols = non_regime_feats + [args.target_col]
     miss = [c for c in required_cols if c not in df.columns]
     if miss:
         raise ValueError(f"Missing columns in panel: {miss}")
