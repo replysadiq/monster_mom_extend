@@ -239,7 +239,11 @@ def compute_deltas(
 
         base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha, model)
         if base_width == 0:
-            raise ValueError("Aborting window: base prediction interval width is zero.")
+            fallback_model = "hgb" if model == "ridge" else "ridge"
+            print(f"  base_width zero with {model}; retrying with {fallback_model}")
+            base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha, fallback_model)
+        if base_width == 0:
+            raise ValueError("Aborting window: base prediction interval width is zero even after fallback.")
         # initialize deltas dict lazily
         for feat in feats_available:
             deltas.setdefault(feat, [])
