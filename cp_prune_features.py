@@ -20,12 +20,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yaml
-try:
-    from mapie.regression import SplitConformalRegressor
-except ImportError as exc:
-    raise SystemExit(
-        "MAPIE is required for conformal intervals. Install with `pip install mapie`."
-    ) from exc
 from joblib import Parallel, delayed
 from scipy.stats import spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -119,7 +113,7 @@ def rolling_windows(dates: List[pd.Timestamp], train: int, cal: int, test: int) 
     return windows
 
 
-def train_mapie(
+def train_conformal(
     train_df: pd.DataFrame,
     cal_df: pd.DataFrame,
     test_df: pd.DataFrame,
@@ -145,16 +139,23 @@ def train_mapie(
     else:
         est = Ridge(random_state=42)
     est.fit(X_train, y_train)
-    confidence = 1 - alpha
-    mapie = SplitConformalRegressor(
-        estimator=est,
-        confidence_level=confidence,
-        prefit=True,
+
+    y_hat_cal = est.predict(X_cal)
+    resid = np.abs(y_cal - y_hat_cal)
+    n_cal = len(resid)
+    if n_cal == 0:
+        return 0.0
+    quantile_level = np.ceil((n_cal + 1) * (1 - alpha)) / n_cal
+    try:
+        q = np.quantile(resid, quantile_level, method="higher")
+    except TypeError:
+        q = np.quantile(resid, quantile_level, interpolation="higher")
+    print(
+        f"  resid stats: mean={resid.mean():.6f}, median={np.median(resid):.6f}, "
+        f"max={resid.max():.6f}, q={q:.6f}"
     )
-    mapie.conformalize(X_cal, y_cal)
-    lower, upper = mapie.predict_interval(X_test)
-    widths = upper - lower
-    return float(np.median(widths))
+    width = 2 * q
+    return float(width)
 
 
 def compute_deltas(
@@ -237,11 +238,11 @@ def compute_deltas(
         if not feats_available:
             raise ValueError("No features remain after group prefilter.")
 
-        base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha, model)
+        base_width = train_conformal(train_df, cal_df, test_df, feats_available, target_col, alpha, model)
         if base_width == 0:
             fallback_model = "hgb" if model == "ridge" else "ridge"
             print(f"  base_width zero with {model}; retrying with {fallback_model}")
-            base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha, fallback_model)
+            base_width = train_conformal(train_df, cal_df, test_df, feats_available, target_col, alpha, fallback_model)
         if base_width == 0:
             raise ValueError("Aborting window: base prediction interval width is zero even after fallback.")
         # initialize deltas dict lazily
@@ -249,7 +250,7 @@ def compute_deltas(
             deltas.setdefault(feat, [])
         def lofo(feat: str) -> Tuple[str, float, float]:
             subset = [f for f in feats_available if f != feat]
-            w_minus = train_mapie(train_df, cal_df, test_df, subset, target_col, alpha, model)
+            w_minus = train_conformal(train_df, cal_df, test_df, subset, target_col, alpha, model)
             delta = np.nan if base_width == 0 else (w_minus - base_width) / base_width
             return feat, w_minus, delta
 
