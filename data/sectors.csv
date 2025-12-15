@@ -1,0 +1,504 @@
+symbol,sector
+360ONE,Financials
+3MINDIA,Industrials
+ABB,IT
+ACC,Healthcare
+ACMESOLAR,Consumer Staples
+AIAENG,Consumer Discretionary
+APLAPOLLO,Energy
+AUBANK,Materials
+AWL,Utilities
+AADHARHFC,Communication
+AARTIIND,Real Estate
+AAVAS,Financials
+ABBOTINDIA,Industrials
+ACE,IT
+ADANIENSOL,Healthcare
+ADANIENT,Consumer Staples
+ADANIGREEN,Consumer Discretionary
+ADANIPORTS,Energy
+ADANIPOWER,Materials
+ATGL,Utilities
+ABCAPITAL,Communication
+ABFRL,Real Estate
+ABLBL,Financials
+ABREL,Industrials
+ABSLAMC,IT
+AEGISLOG,Healthcare
+AEGISVOPAK,Consumer Staples
+AFCONS,Consumer Discretionary
+AFFLE,Energy
+AJANTPHARM,Materials
+AKUMS,Utilities
+AKZOINDIA,Communication
+APLLTD,Real Estate
+ALKEM,Financials
+ALKYLAMINE,Industrials
+ALOKINDS,IT
+ARE&M,Healthcare
+AMBER,Consumer Staples
+AMBUJACEM,Consumer Discretionary
+ANANDRATHI,Energy
+ANANTRAJ,Materials
+ANGELONE,Utilities
+APARINDS,Communication
+APOLLOHOSP,Real Estate
+APOLLOTYRE,Financials
+APTUS,Industrials
+ASAHIINDIA,IT
+ASHOKLEY,Healthcare
+ASIANPAINT,Consumer Staples
+ASTERDM,Consumer Discretionary
+ASTRAZEN,Energy
+ASTRAL,Materials
+ATHERENERG,Utilities
+ATUL,Communication
+AUROPHARMA,Real Estate
+AIIL,Financials
+DMART,Industrials
+AXISBANK,IT
+BASF,Healthcare
+BEML,Consumer Staples
+BLS,Consumer Discretionary
+BSE,Energy
+BAJAJ-AUTO,Materials
+BAJFINANCE,Utilities
+BAJAJFINSV,Communication
+BAJAJHLDNG,Real Estate
+BAJAJHFL,Financials
+BALKRISIND,Industrials
+BALRAMCHIN,IT
+BANDHANBNK,Healthcare
+BANKBARODA,Consumer Staples
+BANKINDIA,Consumer Discretionary
+MAHABANK,Energy
+BATAINDIA,Materials
+BAYERCROP,Utilities
+BERGEPAINT,Communication
+BDL,Real Estate
+BEL,Financials
+BHARATFORG,Industrials
+BHEL,IT
+BPCL,Healthcare
+BHARTIARTL,Consumer Staples
+BHARTIHEXA,Consumer Discretionary
+BIKAJI,Energy
+BIOCON,Materials
+BSOFT,Utilities
+BLUEDART,Communication
+BLUEJET,Real Estate
+BLUESTARCO,Financials
+BBTC,Industrials
+BOSCHLTD,IT
+FIRSTCRY,Healthcare
+BRIGADE,Consumer Staples
+BRITANNIA,Consumer Discretionary
+MAPMYINDIA,Energy
+CCL,Materials
+CESC,Utilities
+CGPOWER,Communication
+CRISIL,Real Estate
+CAMPUS,Financials
+CANFINHOME,Industrials
+CANBK,IT
+CAPLIPOINT,Healthcare
+CGCL,Consumer Staples
+CARBORUNIV,Consumer Discretionary
+CASTROLIND,Energy
+CEATLTD,Materials
+CENTRALBK,Utilities
+CDSL,Communication
+CENTURYPLY,Real Estate
+CERA,Financials
+CHALET,Industrials
+CHAMBLFERT,IT
+CHENNPETRO,Healthcare
+CHOICEIN,Consumer Staples
+CHOLAHLDNG,Consumer Discretionary
+CHOLAFIN,Energy
+CIPLA,Materials
+CUB,Utilities
+CLEAN,Communication
+COALINDIA,Real Estate
+COCHINSHIP,Financials
+COFORGE,Industrials
+COHANCE,IT
+COLPAL,Healthcare
+CAMS,Consumer Staples
+CONCORDBIO,Consumer Discretionary
+CONCOR,Energy
+COROMANDEL,Materials
+CRAFTSMAN,Utilities
+CREDITACC,Communication
+CROMPTON,Real Estate
+CUMMINSIND,Financials
+CYIENT,Industrials
+DCMSHRIRAM,IT
+DLF,Healthcare
+DOMS,Consumer Staples
+DABUR,Consumer Discretionary
+DALBHARAT,Energy
+DATAPATTNS,Materials
+DEEPAKFERT,Utilities
+DEEPAKNTR,Communication
+DELHIVERY,Real Estate
+DEVYANI,Financials
+DIVISLAB,Industrials
+DIXON,IT
+AGARWALEYE,Healthcare
+LALPATHLAB,Consumer Staples
+DRREDDY,Consumer Discretionary
+DUMMYSKFIN,Energy
+DUMMYTATAM,Materials
+DUMMYDBRLT,Utilities
+EIDPARRY,Communication
+EIHOTEL,Real Estate
+EICHERMOT,Financials
+ELECON,Industrials
+ELGIEQUIP,IT
+EMAMILTD,Healthcare
+EMCURE,Consumer Staples
+ENDURANCE,Consumer Discretionary
+ENGINERSIN,Energy
+ERIS,Materials
+ESCORTS,Utilities
+ETERNAL,Communication
+EXIDEIND,Real Estate
+NYKAA,Financials
+FEDERALBNK,Industrials
+FACT,IT
+FINCABLES,Healthcare
+FINPIPE,Consumer Staples
+FSL,Consumer Discretionary
+FIVESTAR,Energy
+FORCEMOT,Materials
+FORTIS,Utilities
+GAIL,Communication
+GVT&D,Real Estate
+GMRAIRPORT,Financials
+GRSE,Industrials
+GICRE,IT
+GILLETTE,Healthcare
+GLAND,Consumer Staples
+GLAXO,Consumer Discretionary
+GLENMARK,Energy
+MEDANTA,Materials
+GODIGIT,Utilities
+GPIL,Communication
+GODFRYPHLP,Real Estate
+GODREJAGRO,Financials
+GODREJCP,Industrials
+GODREJIND,IT
+GODREJPROP,Healthcare
+GRANULES,Consumer Staples
+GRAPHITE,Consumer Discretionary
+GRASIM,Energy
+GRAVITA,Materials
+GESHIP,Utilities
+FLUOROCHEM,Communication
+GUJGASLTD,Real Estate
+GMDCLTD,Financials
+GSPL,Industrials
+HEG,IT
+HBLENGINE,Healthcare
+HCLTECH,Consumer Staples
+HDFCAMC,Consumer Discretionary
+HDFCBANK,Energy
+HDFCLIFE,Materials
+HFCL,Utilities
+HAPPSTMNDS,Communication
+HAVELLS,Real Estate
+HEROMOTOCO,Financials
+HEXT,Industrials
+HSCL,IT
+HINDALCO,Healthcare
+HAL,Consumer Staples
+HINDCOPPER,Consumer Discretionary
+HINDPETRO,Energy
+HINDUNILVR,Materials
+HINDZINC,Utilities
+POWERINDIA,Communication
+HOMEFIRST,Real Estate
+HONASA,Financials
+HONAUT,Industrials
+HUDCO,IT
+HYUNDAI,Healthcare
+ICICIBANK,Consumer Staples
+ICICIGI,Consumer Discretionary
+ICICIPRULI,Energy
+IDBI,Materials
+IDFCFIRSTB,Utilities
+IFCI,Communication
+IIFL,Real Estate
+INOXINDIA,Financials
+IRB,Industrials
+IRCON,IT
+ITCHOTELS,Healthcare
+ITC,Consumer Staples
+ITI,Consumer Discretionary
+INDGN,Energy
+INDIACEM,Materials
+INDIAMART,Utilities
+INDIANB,Communication
+IEX,Real Estate
+INDHOTEL,Financials
+IOC,Industrials
+IOB,IT
+IRCTC,Healthcare
+IRFC,Consumer Staples
+IREDA,Consumer Discretionary
+IGL,Energy
+INDUSTOWER,Materials
+INDUSINDBK,Utilities
+NAUKRI,Communication
+INFY,Real Estate
+INOXWIND,Financials
+INTELLECT,Industrials
+INDIGO,IT
+IGIL,Healthcare
+IKS,Consumer Staples
+IPCALAB,Consumer Discretionary
+JBCHEPHARM,Energy
+JKCEMENT,Materials
+JBMA,Utilities
+JKTYRE,Communication
+JMFINANCIL,Real Estate
+JSWENERGY,Financials
+JSWINFRA,Industrials
+JSWSTEEL,IT
+JPPOWER,Healthcare
+J&KBANK,Consumer Staples
+JINDALSAW,Consumer Discretionary
+JSL,Energy
+JINDALSTEL,Materials
+JIOFIN,Utilities
+JUBLFOOD,Communication
+JUBLINGREA,Real Estate
+JUBLPHARMA,Financials
+JWL,Industrials
+JYOTHYLAB,IT
+JYOTICNC,Healthcare
+KPRMILL,Consumer Staples
+KEI,Consumer Discretionary
+KPITTECH,Energy
+KSB,Materials
+KAJARIACER,Utilities
+KPIL,Communication
+KALYANKJIL,Real Estate
+KARURVYSYA,Financials
+KAYNES,Industrials
+KEC,IT
+KFINTECH,Healthcare
+KIRLOSBROS,Consumer Staples
+KIRLOSENG,Consumer Discretionary
+KOTAKBANK,Energy
+KIMS,Materials
+LTF,Utilities
+LTTS,Communication
+LICHSGFIN,Real Estate
+LTFOODS,Financials
+LTIM,Industrials
+LT,IT
+LATENTVIEW,Healthcare
+LAURUSLABS,Consumer Staples
+THELEELA,Consumer Discretionary
+LEMONTREE,Energy
+LICI,Materials
+LINDEINDIA,Utilities
+LLOYDSME,Communication
+LODHA,Real Estate
+LUPIN,Financials
+MMTC,Industrials
+MRF,IT
+MGL,Healthcare
+MAHSCOOTER,Consumer Staples
+MAHSEAMLES,Consumer Discretionary
+M&MFIN,Energy
+M&M,Materials
+MANAPPURAM,Utilities
+MRPL,Communication
+MANKIND,Real Estate
+MARICO,Financials
+MARUTI,Industrials
+MFSL,IT
+MAXHEALTH,Healthcare
+MAZDOCK,Consumer Staples
+METROPOLIS,Consumer Discretionary
+MINDACORP,Energy
+MSUMI,Materials
+MOTILALOFS,Utilities
+MPHASIS,Communication
+MCX,Real Estate
+MUTHOOTFIN,Financials
+NATCOPHARM,Industrials
+NBCC,IT
+NCC,Healthcare
+NHPC,Consumer Staples
+NLCINDIA,Consumer Discretionary
+NMDC,Energy
+NSLNISP,Materials
+NTPCGREEN,Utilities
+NTPC,Communication
+NH,Real Estate
+NATIONALUM,Financials
+NAVA,Industrials
+NAVINFLUOR,IT
+NESTLEIND,Healthcare
+NETWEB,Consumer Staples
+NEULANDLAB,Consumer Discretionary
+NEWGEN,Energy
+NAM-INDIA,Materials
+NIVABUPA,Utilities
+NUVAMA,Communication
+NUVOCO,Real Estate
+OBEROIRLTY,Financials
+ONGC,Industrials
+OIL,IT
+OLAELEC,Healthcare
+OLECTRA,Consumer Staples
+PAYTM,Consumer Discretionary
+ONESOURCE,Energy
+OFSS,Materials
+POLICYBZR,Utilities
+PCBL,Communication
+PGEL,Real Estate
+PIIND,Financials
+PNBHOUSING,Industrials
+PTCIL,IT
+PVRINOX,Healthcare
+PAGEIND,Consumer Staples
+PATANJALI,Consumer Discretionary
+PERSISTENT,Energy
+PETRONET,Materials
+PFIZER,Utilities
+PHOENIXLTD,Communication
+PIDILITIND,Real Estate
+PPLPHARMA,Financials
+POLYMED,Industrials
+POLYCAB,IT
+POONAWALLA,Healthcare
+PFC,Consumer Staples
+POWERGRID,Consumer Discretionary
+PRAJIND,Energy
+PREMIERENE,Materials
+PRESTIGE,Utilities
+PGHH,Communication
+PNB,Real Estate
+RRKABEL,Financials
+RBLBANK,Industrials
+RECLTD,IT
+RHIM,Healthcare
+RITES,Consumer Staples
+RADICO,Consumer Discretionary
+RVNL,Energy
+RAILTEL,Materials
+RAINBOW,Utilities
+RKFORGE,Communication
+RCF,Real Estate
+REDINGTON,Financials
+RELIANCE,Industrials
+RELINFRA,IT
+RPOWER,Healthcare
+SBFC,Consumer Staples
+SBICARD,Consumer Discretionary
+SBILIFE,Energy
+SJVN,Materials
+SKFINDIA,Utilities
+SRF,Communication
+SAGILITY,Real Estate
+SAILIFE,Financials
+SAMMAANCAP,Industrials
+MOTHERSON,IT
+SAPPHIRE,Healthcare
+SARDAEN,Consumer Staples
+SAREGAMA,Consumer Discretionary
+SCHAEFFLER,Energy
+SCHNEIDER,Materials
+SCI,Utilities
+SHREECEM,Communication
+SHRIRAMFIN,Real Estate
+SHYAMMETL,Financials
+ENRIN,Industrials
+SIEMENS,IT
+SIGNATURE,Healthcare
+SOBHA,Consumer Staples
+SOLARINDS,Consumer Discretionary
+SONACOMS,Energy
+SONATSOFTW,Materials
+STARHEALTH,Utilities
+SBIN,Communication
+SAIL,Real Estate
+SUMICHEM,Financials
+SUNPHARMA,Industrials
+SUNTV,IT
+SUNDARMFIN,Healthcare
+SUNDRMFAST,Consumer Staples
+SUPREMEIND,Consumer Discretionary
+SUZLON,Energy
+SWANCORP,Materials
+SWIGGY,Utilities
+SYNGENE,Communication
+SYRMA,Real Estate
+TBOTEK,Financials
+TVSMOTOR,Industrials
+TATACHEM,IT
+TATACOMM,Healthcare
+TCS,Consumer Staples
+TATACONSUM,Consumer Discretionary
+TATAELXSI,Energy
+TATAINVEST,Materials
+TATAMOTORS,Utilities
+TATAPOWER,Communication
+TATASTEEL,Real Estate
+TATATECH,Financials
+TTML,Industrials
+TECHM,IT
+TECHNOE,Healthcare
+TEJASNET,Consumer Staples
+NIACL,Consumer Discretionary
+RAMCOCEM,Energy
+THERMAX,Materials
+TIMKEN,Utilities
+TITAGARH,Communication
+TITAN,Real Estate
+TORNTPHARM,Financials
+TORNTPOWER,Industrials
+TARIL,IT
+TRENT,Healthcare
+TRIDENT,Consumer Staples
+TRIVENI,Consumer Discretionary
+TRITURBINE,Energy
+TIINDIA,Materials
+UCOBANK,Utilities
+UNOMINDA,Communication
+UPL,Real Estate
+UTIAMC,Financials
+ULTRACEMCO,Industrials
+UNIONBANK,IT
+UBL,Healthcare
+UNITDSPR,Consumer Staples
+USHAMART,Consumer Discretionary
+VGUARD,Energy
+DBREALTY,Materials
+VTL,Utilities
+VBL,Communication
+MANYAVAR,Real Estate
+VEDL,Financials
+VENTIVE,Industrials
+VIJAYA,IT
+VMM,Healthcare
+IDEA,Consumer Staples
+VOLTAS,Consumer Discretionary
+WAAREEENER,Energy
+WELCORP,Materials
+WELSPUNLIV,Utilities
+WHIRLPOOL,Communication
+WIPRO,Real Estate
+WOCKPHARMA,Financials
+YESBANK,Industrials
+ZFCVINDIA,IT
+ZEEL,Healthcare
+ZENTEC,Consumer Staples
+ZENSARTECH,Consumer Discretionary
+ZYDUSLIFE,Energy
+ECLERX,Materials

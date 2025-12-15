@@ -1,0 +1,6 @@
+adv_60d
+ret_8w
+ret_12m
+pct_above_50d_sma
+pct_above_200d_sma
+atr_pct_14

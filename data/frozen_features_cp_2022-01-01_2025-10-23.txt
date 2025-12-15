@@ -1,0 +1,6 @@
+turnover_ratio_20d
+ret_2w
+excess_ret_3m_vs_index
+adx_14
+pct_above_50d_sma
+hist_vol_20d
