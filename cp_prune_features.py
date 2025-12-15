@@ -360,6 +360,10 @@ def main() -> None:
         model=args.model,
         max_feats_per_group=args.max_features_per_group,
         n_jobs=args.n_jobs,
+        min_cal_rows=args.min_cal_rows,
+        min_cal_std=args.min_cal_std,
+        min_cal_unique=args.min_cal_unique,
+        smoke=args.smoke,
     )
     summary = summarize_deltas(deltas, manifest, args.target_col)
     # Exclude regime if present (none in manifest)
