@@ -225,7 +225,7 @@ def compute_deltas(
         if no_prefilter:
             feats_available = [
                 f for f, meta in manifest.items()
-                if meta.group != "regime" and f != target_col
+                if meta.group != "regime" and f != target_col and f in df.columns
             ]
         else:
             # Pre-filter top features per group by Spearman IC on train+cal
@@ -246,7 +246,7 @@ def compute_deltas(
                     ic_list.append((f, abs(ic)))
                 ic_list = sorted(ic_list, key=lambda x: x[1], reverse=True)[:max_feats_per_group]
                 feats_filtered.extend([f for f, _ in ic_list])
-        feats_available = feats_filtered
+            feats_available = feats_filtered
         if not feats_available:
             raise ValueError("No features remain after group prefilter.")
 
