@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--test-weeks", type=int, default=26)
     ap.add_argument("--alpha", type=float, default=0.1, help="Alpha for 1-alpha coverage (e.g., 0.1 -> 90%)")
     ap.add_argument("--out-summary", type=Path, default=Path("data/cp_delta_summary.csv"))
-    ap.add_argument("--out-frozen", type=Path, default=Path("data/frozen_features_cp.txt"))
+    ap.add_argument("--out-frozen", type=Path, default=None)
     ap.add_argument("--smoke", action="store_true", help="Smoke test on limited symbols/weeks.")
     ap.add_argument("--model", type=str, default="ridge", choices=["ridge", "hgb"], help="Base model for CP.")
     ap.add_argument("--max-features-per-group", type=int, default=6, help="Pre-filter top-K features per group by Spearman IC on train+cal.")
@@ -57,6 +57,11 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--min-cal-rows", type=int, default=2000, help="Minimum calibration rows after dropna; abort window if below.")
     ap.add_argument("--min-cal-std", type=float, default=1e-6, help="Minimum calibration target std; abort window if below.")
     ap.add_argument("--min-cal-unique", type=int, default=50, help="Minimum calibration target unique values; abort window if below.")
+    ap.add_argument(
+        "--no-prefilter",
+        action="store_true",
+        help="Disable IC-based prefiltering and run LOFO on all features in the manifest.",
+    )
     return ap.parse_args()
 
 
@@ -216,27 +221,38 @@ def compute_deltas(
             )
         if len(cal_df) < cal_row_thresh:
             raise ValueError(f"Aborting window: calibration rows < {cal_row_thresh} after dropna.")
-        # Pre-filter top features per group by Spearman IC on train+cal
-        tc_df = pd.concat([train_df, cal_df])
-        feats_filtered: List[str] = []
-        for grp in sorted({manifest[f].group for f in feats_available}):
-            grp_feats = [f for f in feats_available if manifest[f].group == grp]
-            ic_list = []
-            for f in grp_feats:
-                if f not in tc_df.columns:
-                    continue
-                series = tc_df[[f, target_col]].dropna()
-                if len(series) < 50:
-                    continue
-                ic, _ = spearmanr(series[f], series[target_col])
-                if np.isnan(ic):
-                    continue
-                ic_list.append((f, abs(ic)))
-            ic_list = sorted(ic_list, key=lambda x: x[1], reverse=True)[:max_feats_per_group]
-            feats_filtered.extend([f for f, _ in ic_list])
+        if args.no_prefilter:
+            feats_available = [
+                f for f, meta in manifest.items()
+                if meta.group != "regime" and f != target_col
+            ]
+        else:
+            # Pre-filter top features per group by Spearman IC on train+cal
+            tc_df = pd.concat([train_df, cal_df])
+            feats_filtered: List[str] = []
+            for grp in sorted({manifest[f].group for f in feats_available}):
+                grp_feats = [f for f in feats_available if manifest[f].group == grp]
+                ic_list = []
+                for f in grp_feats:
+                    if f not in tc_df.columns:
+                        continue
+                    series = tc_df[[f, target_col]].dropna()
+                    if len(series) < 50:
+                        continue
+                    ic, _ = spearmanr(series[f], series[target_col])
+                    if np.isnan(ic):
+                        continue
+                    ic_list.append((f, abs(ic)))
+                ic_list = sorted(ic_list, key=lambda x: x[1], reverse=True)[:max_feats_per_group]
+                feats_filtered.extend([f for f, _ in ic_list])
         feats_available = feats_filtered
         if not feats_available:
             raise ValueError("No features remain after group prefilter.")
+
+        print(
+            f"[CP-LOFO] Using {len(feats_available)} features: "
+            f"{sorted(feats_available)}"
+        )
 
         base_width = train_conformal(train_df, cal_df, test_df, feats_available, target_col, alpha, model)
         if base_width == 0:
@@ -375,8 +391,14 @@ def main() -> None:
     summary_decided.to_csv(args.out_summary, index=False)
 
     out_frozen = args.out_frozen
-    if args.start and args.end:
-        out_frozen = Path(f"data/frozen_features_cp_{args.start}_{args.end}.txt")
+    if out_frozen is None:
+        tgt = args.target_col.replace("target_", "")
+        if args.start and args.end:
+            out_frozen = Path(
+                f"data/frozen_features_cp_{tgt}_{args.start}_{args.end}.txt"
+            )
+        else:
+            out_frozen = Path(f"data/frozen_features_cp_{tgt}.txt")
     out_frozen.parent.mkdir(parents=True, exist_ok=True)
     with out_frozen.open("w") as f:
         for feat in kept:
