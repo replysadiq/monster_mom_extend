@@ -178,6 +178,7 @@ def compute_deltas(
     min_cal_std: float,
     min_cal_unique: int,
     smoke: bool,
+    no_prefilter: bool,
 ) -> Dict[str, List[float]]:
     dates = sorted(df.index.get_level_values("week_date").unique())
     windows = rolling_windows(dates, train_weeks, cal_weeks, test_weeks)
@@ -221,7 +222,7 @@ def compute_deltas(
             )
         if len(cal_df) < cal_row_thresh:
             raise ValueError(f"Aborting window: calibration rows < {cal_row_thresh} after dropna.")
-        if args.no_prefilter:
+        if no_prefilter:
             feats_available = [
                 f for f, meta in manifest.items()
                 if meta.group != "regime" and f != target_col
@@ -381,6 +382,7 @@ def main() -> None:
         min_cal_std=args.min_cal_std,
         min_cal_unique=args.min_cal_unique,
         smoke=args.smoke,
+        no_prefilter=args.no_prefilter,
     )
     summary = summarize_deltas(deltas, manifest, args.target_col)
     # Exclude regime if present (none in manifest)
