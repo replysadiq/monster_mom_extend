@@ -150,10 +150,6 @@ def train_mapie(
         estimator=est,
         confidence_level=confidence,
         prefit=True,
-        min_cal_rows=args.min_cal_rows,
-        min_cal_std=args.min_cal_std,
-        min_cal_unique=args.min_cal_unique,
-        smoke=args.smoke,
     )
     mapie.conformalize(X_cal, y_cal)
     lower, upper = mapie.predict_interval(X_test)
