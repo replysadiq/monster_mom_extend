@@ -60,6 +60,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--model", type=str, default="ridge", choices=["ridge", "hgb"], help="Base model for CP.")
     ap.add_argument("--max-features-per-group", type=int, default=6, help="Pre-filter top-K features per group by Spearman IC on train+cal.")
     ap.add_argument("--n-jobs", type=int, default=-1, help="Parallel jobs for LOFO within a window.")
+    ap.add_argument("--min-cal-rows", type=int, default=2000, help="Minimum calibration rows after dropna; abort window if below.")
+    ap.add_argument("--min-cal-std", type=float, default=1e-6, help="Minimum calibration target std; abort window if below.")
+    ap.add_argument("--min-cal-unique", type=int, default=50, help="Minimum calibration target unique values; abort window if below.")
     return ap.parse_args()
 
 
@@ -147,6 +150,10 @@ def train_mapie(
         estimator=est,
         confidence_level=confidence,
         prefit=True,
+        min_cal_rows=args.min_cal_rows,
+        min_cal_std=args.min_cal_std,
+        min_cal_unique=args.min_cal_unique,
+        smoke=args.smoke,
     )
     mapie.conformalize(X_cal, y_cal)
     lower, upper = mapie.predict_interval(X_test)
@@ -165,6 +172,10 @@ def compute_deltas(
     model: str,
     max_feats_per_group: int,
     n_jobs: int,
+    min_cal_rows: int,
+    min_cal_std: float,
+    min_cal_unique: int,
+    smoke: bool,
 ) -> Dict[str, List[float]]:
     dates = sorted(df.index.get_level_values("week_date").unique())
     windows = rolling_windows(dates, train_weeks, cal_weeks, test_weeks)
@@ -199,10 +210,15 @@ def compute_deltas(
             f"  target test std={np.std(y_test):.6f}, nunique={len(np.unique(y_test))}, "
             f"min={np.min(y_test):.6f}, max={np.max(y_test):.6f}"
         )
-        if np.std(y_cal) < 1e-6 or len(np.unique(y_cal)) < 50:
-            raise ValueError("Aborting window: calibration target degenerate (std<1e-6 or nunique<50).")
-        if len(cal_df) < 2000:
-            raise ValueError("Aborting window: calibration rows < 2000 after dropna.")
+        cal_std = np.std(y_cal)
+        cal_unique = len(np.unique(y_cal))
+        cal_row_thresh = min_cal_rows if not smoke else min(min_cal_rows, 200)
+        if cal_std < min_cal_std or cal_unique < min_cal_unique:
+            raise ValueError(
+                f"Aborting window: calibration target degenerate (std<{min_cal_std} or nunique<{min_cal_unique})."
+            )
+        if len(cal_df) < cal_row_thresh:
+            raise ValueError(f"Aborting window: calibration rows < {cal_row_thresh} after dropna.")
         # Pre-filter top features per group by Spearman IC on train+cal
         tc_df = pd.concat([train_df, cal_df])
         feats_filtered: List[str] = []
