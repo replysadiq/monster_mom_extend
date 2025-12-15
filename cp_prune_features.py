@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 import yaml
 try:
-    from mapie.regression import MapieRegressor
+    from mapie.regression import SplitConformalRegressor
 except ImportError as exc:
     raise SystemExit(
         "MAPIE is required for conformal intervals. Install with `pip install mapie`."
@@ -87,6 +87,7 @@ def load_panel(path: Path, target_col: str, start: Optional[str], end: Optional[
     s = pd.to_datetime(start) if start else None
     e = pd.to_datetime(end) if end else None
     df = filter_dates(df, s, e)
+    df = df.replace([np.inf, -np.inf], np.nan)
     if smoke:
         symbols = df.index.get_level_values("symbol").unique()[:30]
         weeks = df.index.get_level_values("week_date").unique()[:120]
@@ -132,10 +133,15 @@ def train_mapie(
         random_state=42,
     )
     est.fit(X_train, y_train)
-    mapie = MapieRegressor(estimator=est, method="base", cv="prefit", alpha=alpha)
-    mapie.fit(X_cal, y_cal)
-    _, y_pis = mapie.predict(X_test, alpha=alpha)
-    widths = y_pis[:, 1, 0] - y_pis[:, 0, 0]
+    confidence = 1 - alpha
+    mapie = SplitConformalRegressor(
+        estimator=est,
+        confidence_level=confidence,
+        prefit=True,
+    )
+    mapie.conformalize(X_cal, y_cal)
+    lower, upper = mapie.predict_interval(X_test)
+    widths = upper - lower
     return float(np.mean(widths))
 
 
