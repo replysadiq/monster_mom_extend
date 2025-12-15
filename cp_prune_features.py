@@ -13,7 +13,6 @@ Workflow:
 from __future__ import annotations
 
 import argparse
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -27,7 +26,10 @@ except ImportError as exc:
     raise SystemExit(
         "MAPIE is required for conformal intervals. Install with `pip install mapie`."
     ) from exc
-from sklearn.ensemble import GradientBoostingRegressor
+from joblib import Parallel, delayed
+from scipy.stats import spearmanr
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import Ridge
 
 
 MIN_GROUP_KEEP = {"momentum": 2, "trend": 2, "volatility": 1, "liquidity": 1}
@@ -55,6 +57,9 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--out-summary", type=Path, default=Path("data/cp_delta_summary.csv"))
     ap.add_argument("--out-frozen", type=Path, default=Path("data/frozen_features_cp.txt"))
     ap.add_argument("--smoke", action="store_true", help="Smoke test on limited symbols/weeks.")
+    ap.add_argument("--model", type=str, default="ridge", choices=["ridge", "hgb"], help="Base model for CP.")
+    ap.add_argument("--max-features-per-group", type=int, default=6, help="Pre-filter top-K features per group by Spearman IC on train+cal.")
+    ap.add_argument("--n-jobs", type=int, default=-1, help="Parallel jobs for LOFO within a window.")
     return ap.parse_args()
 
 
@@ -118,6 +123,7 @@ def train_mapie(
     features: List[str],
     target_col: str,
     alpha: float,
+    model: str,
 ) -> float:
     X_train = train_df[features].values
     y_train = train_df[target_col].values
@@ -125,13 +131,16 @@ def train_mapie(
     y_cal = cal_df[target_col].values
     X_test = test_df[features].values
 
-    est = GradientBoostingRegressor(
-        n_estimators=150,
-        max_depth=3,
-        learning_rate=0.05,
-        subsample=0.8,
-        random_state=42,
-    )
+    if model == "hgb":
+        est = HistGradientBoostingRegressor(
+            max_depth=6,
+            learning_rate=0.05,
+            max_iter=200,
+            validation_fraction=None,
+            random_state=42,
+        )
+    else:
+        est = Ridge(random_state=42)
     est.fit(X_train, y_train)
     confidence = 1 - alpha
     mapie = SplitConformalRegressor(
@@ -153,6 +162,9 @@ def compute_deltas(
     train_weeks: int,
     cal_weeks: int,
     test_weeks: int,
+    model: str,
+    max_feats_per_group: int,
+    n_jobs: int,
 ) -> Dict[str, List[float]]:
     dates = sorted(df.index.get_level_values("week_date").unique())
     windows = rolling_windows(dates, train_weeks, cal_weeks, test_weeks)
@@ -176,21 +188,61 @@ def compute_deltas(
         cal_df = window_df.loc[window_df.index.get_level_values("week_date").isin(cal_dates)]
         test_df = window_df.loc[window_df.index.get_level_values("week_date").isin(test_dates)]
         print(f" n_train={len(train_df)}, n_cal={len(cal_df)}, n_test={len(test_df)}")
+        # Target diagnostics
+        y_cal = cal_df[target_col].values
+        y_test = test_df[target_col].values
+        print(
+            f"  target cal std={np.std(y_cal):.6f}, nunique={len(np.unique(y_cal))}, "
+            f"min={np.min(y_cal):.6f}, max={np.max(y_cal):.6f}"
+        )
+        print(
+            f"  target test std={np.std(y_test):.6f}, nunique={len(np.unique(y_test))}, "
+            f"min={np.min(y_test):.6f}, max={np.max(y_test):.6f}"
+        )
+        if np.std(y_cal) < 1e-6 or len(np.unique(y_cal)) < 50:
+            raise ValueError("Aborting window: calibration target degenerate (std<1e-6 or nunique<50).")
+        if len(cal_df) < 2000:
+            raise ValueError("Aborting window: calibration rows < 2000 after dropna.")
+        # Pre-filter top features per group by Spearman IC on train+cal
+        tc_df = pd.concat([train_df, cal_df])
+        feats_filtered: List[str] = []
+        for grp in sorted({manifest[f].group for f in feats_available}):
+            grp_feats = [f for f in feats_available if manifest[f].group == grp]
+            ic_list = []
+            for f in grp_feats:
+                if f not in tc_df.columns:
+                    continue
+                series = tc_df[[f, target_col]].dropna()
+                if len(series) < 50:
+                    continue
+                ic, _ = spearmanr(series[f], series[target_col])
+                if np.isnan(ic):
+                    continue
+                ic_list.append((f, abs(ic)))
+            ic_list = sorted(ic_list, key=lambda x: x[1], reverse=True)[:max_feats_per_group]
+            feats_filtered.extend([f for f, _ in ic_list])
+        feats_available = feats_filtered
+        if not feats_available:
+            raise ValueError("No features remain after group prefilter.")
 
-        base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha)
+        base_width = train_mapie(train_df, cal_df, test_df, feats_available, target_col, alpha, model)
+        if base_width == 0:
+            raise ValueError("Aborting window: base prediction interval width is zero.")
         # initialize deltas dict lazily
         for feat in feats_available:
             deltas.setdefault(feat, [])
-        # Debug: first 3 LOFOs
-        for j, feat in enumerate(feats_available):
+        def lofo(feat: str) -> Tuple[str, float, float]:
             subset = [f for f in feats_available if f != feat]
-            w_minus = train_mapie(train_df, cal_df, test_df, subset, target_col, alpha)
-            if base_width == 0:
-                delta = np.nan
-            else:
-                delta = (w_minus - base_width) / base_width
+            w_minus = train_mapie(train_df, cal_df, test_df, subset, target_col, alpha, model)
+            delta = np.nan if base_width == 0 else (w_minus - base_width) / base_width
+            return feat, w_minus, delta
+
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(lofo)(feat) for feat in feats_available
+        )
+        for idx, (feat, w_minus, delta) in enumerate(results):
             deltas[feat].append(delta)
-            if j < 3:
+            if idx < 3:
                 print(f"  LOFO {feat}: base_width={base_width:.6f}, w_minus={w_minus:.6f}, delta={delta:.6f}")
     return deltas
 
@@ -289,6 +341,9 @@ def main() -> None:
         train_weeks=args.train_weeks,
         cal_weeks=args.cal_weeks,
         test_weeks=args.test_weeks,
+        model=args.model,
+        max_feats_per_group=args.max_features_per_group,
+        n_jobs=args.n_jobs,
     )
     summary = summarize_deltas(deltas, manifest, args.target_col)
     # Exclude regime if present (none in manifest)
