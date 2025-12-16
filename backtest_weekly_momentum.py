@@ -565,12 +565,13 @@ def main() -> None:
     equity, trades, holdings, summary_df = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
     metrics = compute_metrics(equity, trades, cfg)
 
-    resolved_out_dir = resolve_out_paths(cfg)
-    equity.to_csv(resolved_out_dir / "equity_curve.csv", index=False)
-    trades.to_csv(resolved_out_dir / "trades.csv", index=False)
-    holdings.to_csv(resolved_out_dir / "holdings.csv", index=False)
-    summary_df.to_csv(resolved_out_dir / "rebalance_summary.csv", index=False)
-    with (resolved_out_dir / "summary.json").open("w") as f:
+    out_base = Path(cfg.out_dir) if cfg.out_dir else RESULTS_DIR
+    out_base.mkdir(parents=True, exist_ok=True)
+    equity.to_csv(out_base / "equity_curve.csv", index=False)
+    trades.to_csv(out_base / "trades.csv", index=False)
+    holdings.to_csv(out_base / "holdings.csv", index=False)
+    summary_df.to_csv(out_base / "rebalance_summary.csv", index=False)
+    with (out_base / "summary.json").open("w") as f:
         json.dump(metrics, f, indent=2)
 
     print("==== Backtest Summary ====")
