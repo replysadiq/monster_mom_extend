@@ -137,6 +137,7 @@ def resolve_out_paths(cfg: Config) -> Path:
 
 
 def select_portfolio(
+    week_date: pd.Timestamp,
     week_df: pd.DataFrame,
     cfg: Config,
     frozen_features: List[str],
@@ -152,7 +153,7 @@ def select_portfolio(
     if df.empty:
         summary_records.append(
             {
-                "week_date": week_df.index.get_level_values("week_date")[0],
+                "week_date": pd.Timestamp(week_date),
                 "eligible_count": 0,
                 "selected_count": 0,
                 "cash_weight": 1.0,
@@ -179,7 +180,7 @@ def select_portfolio(
     if df.empty:
         summary_records.append(
             {
-                "week_date": week_df.index.get_level_values("week_date")[0],
+                "week_date": pd.Timestamp(week_date),
                 "eligible_count": 0,
                 "selected_count": 0,
                 "cash_weight": 1.0,
@@ -203,7 +204,7 @@ def select_portfolio(
     if not scores:
         summary_records.append(
             {
-                "week_date": week_df.index.get_level_values("week_date")[0],
+                "week_date": pd.Timestamp(week_date),
                 "eligible_count": len(df),
                 "selected_count": 0,
                 "cash_weight": 1.0,
@@ -255,7 +256,7 @@ def select_portfolio(
     cash_w = max(0.0, 1 - 0.1 * selected_count)
     summary_records.append(
         {
-            "week_date": week_df.index.get_level_values("week_date")[0],
+            "week_date": pd.Timestamp(week_date),
             "eligible_count": len(df),
             "selected_count": selected_count,
             "cash_weight": cash_w,
@@ -326,7 +327,7 @@ def simulate(
 
     for reb_date in rebalance_dates:
         week_slice = features.xs(reb_date, level="week_date")
-        selection = select_portfolio(week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds, summary_records)
+        selection = select_portfolio(reb_date, week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds, summary_records)
         if selection.empty:
             # record equity unchanged
             equity_records.append(
