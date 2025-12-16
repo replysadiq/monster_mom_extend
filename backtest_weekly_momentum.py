@@ -441,9 +441,11 @@ def simulate(
 
 
 def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame, cfg: Config) -> Dict[str, float]:
-    rets = equity["return"]
+    rets = pd.Series(equity["return"]).replace([np.inf, -np.inf], np.nan).dropna()
+    rets = rets.clip(lower=-0.999999)
     weeks_per_year = 52
-    ann_ret = (1 + rets).prod() ** (weeks_per_year / max(len(rets), 1)) - 1
+    log_g = np.log1p(rets).sum()
+    ann_ret = np.expm1(log_g * (weeks_per_year / max(len(rets), 1)))
     ann_vol = rets.std(ddof=0) * np.sqrt(weeks_per_year)
     sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
     max_dd = equity["drawdown"].min()
