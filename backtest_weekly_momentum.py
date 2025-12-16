@@ -235,7 +235,7 @@ def select_portfolio(
     if not quality_ok:
         summary_records.append(
             {
-                "week_date": week_df.index.get_level_values("week_date")[0],
+                "week_date": pd.Timestamp(week_date),
                 "eligible_count": len(df),
                 "selected_count": 0,
                 "cash_weight": 1.0,
@@ -245,7 +245,7 @@ def select_portfolio(
             }
         )
         print(
-            f"{week_df.index.get_level_values('week_date')[0]} "
+            f"{pd.Timestamp(week_date)} "
             f"universe={len(week_df)}, eligible={len(df)}, selected=0, cash=1.0, quality_ok=False, "
             f"score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}"
         )
@@ -266,7 +266,7 @@ def select_portfolio(
         }
     )
     print(
-        f"{week_df.index.get_level_values('week_date')[0]} "
+        f"{pd.Timestamp(week_date)} "
         f"universe={len(week_df)}, eligible={len(df)}, selected={selected_count}, cash={cash_w:.2f}, "
         f"quality_ok=True, score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}"
     )
