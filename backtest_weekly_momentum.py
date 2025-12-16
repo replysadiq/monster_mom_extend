@@ -58,6 +58,9 @@ class Config:
     gate_only: Optional[List[str]]
     risk_veto: Optional[List[str]]
     gate_thresholds_yaml: Optional[Path]
+    gate_thresholds_str: Optional[str] = None
+    veto_thresholds_str: Optional[str] = None
+    quality_thresholds_str: Optional[str] = None
 
 
 def load_ohlcv(path: Path) -> pd.DataFrame:
@@ -528,16 +531,23 @@ def main() -> None:
     frozen = load_frozen_features(frozen_path)
     gate_only = cfg.gate_only if cfg.gate_only is not None else default_gate_only
     risk_veto = cfg.risk_veto if cfg.risk_veto is not None else default_risk_veto
-    gate_thresholds = {
+    gate_defaults = {
         "volume_zscore_20d": 0.60,
         "adx_14": 0.55,
         "turnover_ratio_20d": 0.55,
+    }
+    veto_defaults = {
         "hist_vol_60d": 0.75,
         "hist_vol_20d": 0.75,
     }
+    quality_defaults = {"min_eligible": 5, "score_std": 0.08, "top_minus_median": 0.10}
+    gate_thresholds = gate_defaults.copy()
     if cfg.gate_thresholds_yaml and cfg.gate_thresholds_yaml.exists():
         import yaml
         gate_thresholds.update(yaml.safe_load(cfg.gate_thresholds_yaml.read_text()))
+    gate_thresholds = parse_thresholds(cfg.gate_thresholds_str, gate_thresholds)
+    veto_thresholds = parse_thresholds(cfg.veto_thresholds_str, veto_defaults)
+    quality_thresholds = parse_thresholds(cfg.quality_thresholds_str, quality_defaults)
     directions = load_manifest(cfg.manifest)
 
     equity, trades, holdings, summary_df = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
