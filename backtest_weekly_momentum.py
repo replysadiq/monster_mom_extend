@@ -50,6 +50,14 @@ class Config:
     features_path: Optional[Path]
     frozen_features_path: Path
     out_prefix: str
+    target_col: str
+    manifest: Path
+    score_horizon: str
+    frozen_1w: Optional[Path]
+    frozen_4w: Optional[Path]
+    gate_only: Optional[List[str]]
+    risk_veto: Optional[List[str]]
+    gate_thresholds_yaml: Optional[Path]
 
 
 def load_ohlcv(path: Path) -> pd.DataFrame:
@@ -94,28 +102,63 @@ def load_frozen_features(path: Path) -> List[str]:
         return [line.strip() for line in f if line.strip()]
 
 
+def load_manifest(path: Path) -> Dict[str, Dict[str, int]]:
+    import yaml
+    data = yaml.safe_load(path.read_text())
+    directions = {}
+    for entry in data.get("groups", []):
+        directions[entry["feature"]] = int(entry.get("direction", 1))
+    return directions
+
+
 def select_portfolio(
     week_df: pd.DataFrame,
     cfg: Config,
     frozen_features: List[str],
+    directions: Dict[str, int],
+    gate_only: List[str],
+    risk_veto: List[str],
+    gate_thresholds: Dict[str, float],
 ) -> pd.DataFrame:
     df = week_df.copy()
     df = df[df["adv_60d"] >= cfg.min_adv]
-    if cfg.trend_gate == "200d":
-        df = df[df["pct_above_200d_sma"] > 0]
-    elif cfg.trend_gate == "50d_200d":
-        df = df[(df["pct_above_200d_sma"] > 0) & (df["pct_above_50d_sma"] > 0)]
 
     if df.empty:
         return pd.DataFrame(columns=["symbol", "score"])
 
-    # Score using frozen features ret_12m and ret_8w weights
-    for feat in ["ret_12m", "ret_8w"]:
-        if feat not in frozen_features:
-            raise ValueError(f"Required feature {feat} not found in frozen feature list")
-    df["score"] = (
-        df["ret_12m"].rank(pct=True) * cfg.w12m + df["ret_8w"].rank(pct=True) * cfg.w8w
-    )
+    # Apply gates
+    eligible = pd.Series(True, index=df.index)
+    for feat in gate_only:
+        if feat in df.columns:
+            thr = gate_thresholds.get(feat, 0.0)
+            eligible &= df[feat].rank(pct=True) >= thr
+    for feat in risk_veto:
+        if feat in df.columns:
+            thr = gate_thresholds.get(feat, 1.0)
+            eligible &= df[feat].rank(pct=True) <= thr
+
+    df = df[eligible]
+
+    if df.empty:
+        return pd.DataFrame(columns=["symbol", "score"])
+
+    # Scoring features
+    scoring_features = [f for f in frozen_features if f not in gate_only and f not in risk_veto]
+    scores = []
+    for feat in scoring_features:
+        if feat not in df.columns:
+            continue
+        ranks = df[feat].rank(pct=True)
+        if directions.get(feat, 1) == -1:
+            ranks = 1 - ranks
+        scores.append(ranks)
+    if not scores:
+        return pd.DataFrame(columns=["symbol", "score"])
+    score_df = pd.concat(scores, axis=1)
+    score_df["score"] = score_df.mean(axis=1)
+    df = df.loc[score_df.index]
+    df["score"] = score_df["score"]
+
     top = df.nlargest(cfg.top_n, "score")
     return top[["score"]]
 
@@ -157,6 +200,10 @@ def simulate(
     ohlcv: pd.DataFrame,
     cfg: Config,
     frozen_features: List[str],
+    directions: Dict[str, int],
+    gate_only: List[str],
+    risk_veto: List[str],
+    gate_thresholds: Dict[str, float],
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     rebalance_dates = compute_rebalance_dates(features, cfg.start, cfg.end)
     portfolio_value = cfg.initial_capital
@@ -169,7 +216,7 @@ def simulate(
 
     for reb_date in rebalance_dates:
         week_slice = features.xs(reb_date, level="week_date")
-        selection = select_portfolio(week_slice, cfg, frozen_features)
+        selection = select_portfolio(week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds)
         if selection.empty:
             # record equity unchanged
             equity_records.append(
@@ -322,6 +369,14 @@ def parse_args() -> Config:
     ap.add_argument("--features", type=Path, default=None, help="Path to precomputed weekly features parquet.")
     ap.add_argument("--frozen_features", type=Path, required=True, help="Path to frozen features txt.")
     ap.add_argument("--out_prefix", type=str, default="backtest")
+    ap.add_argument("--target-col", type=str, default="target_forward_4w_excess")
+    ap.add_argument("--manifest", type=Path, default=Path("feature_groups.yaml"))
+    ap.add_argument("--score-horizon", type=str, default="4w", choices=["1w", "4w"])
+    ap.add_argument("--frozen_features_1w", type=Path, default=None)
+    ap.add_argument("--frozen_features_4w", type=Path, default=None)
+    ap.add_argument("--gate_only", type=str, default=None, help="Comma-separated gate-only features override.")
+    ap.add_argument("--risk_veto", type=str, default=None, help="Comma-separated risk veto features override.")
+    ap.add_argument("--gate_thresholds_yaml", type=Path, default=None)
     args = ap.parse_args()
     start = pd.to_datetime(args.start)
     end = pd.to_datetime(args.end)
@@ -343,6 +398,14 @@ def parse_args() -> Config:
         features_path=args.features,
         frozen_features_path=args.frozen_features,
         out_prefix=args.out_prefix,
+        target_col=args.target_col,
+        manifest=args.manifest,
+        score_horizon=args.score_horizon,
+        frozen_1w=args.frozen_features_1w,
+        frozen_4w=args.frozen_features_4w,
+        gate_only=args.gate_only.split(",") if args.gate_only else None,
+        risk_veto=args.risk_veto.split(",") if args.risk_veto else None,
+        gate_thresholds_yaml=args.gate_thresholds_yaml,
     )
 
 
@@ -350,9 +413,30 @@ def main() -> None:
     cfg = parse_args()
     features = get_weekly_features(cfg)
     ohlcv = load_ohlcv(Path("data/ohlcv.parquet"))
-    frozen = load_frozen_features(cfg.frozen_features_path)
+    if cfg.score_horizon == "1w":
+        frozen_path = cfg.frozen_1w or cfg.frozen_features_path
+        default_gate_only = ["volume_zscore_20d"]
+        default_risk_veto = ["hist_vol_60d"]
+    else:
+        frozen_path = cfg.frozen_4w or cfg.frozen_features_path
+        default_gate_only = ["adx_14", "turnover_ratio_20d"]
+        default_risk_veto = ["hist_vol_20d"]
+    frozen = load_frozen_features(frozen_path)
+    gate_only = cfg.gate_only if cfg.gate_only is not None else default_gate_only
+    risk_veto = cfg.risk_veto if cfg.risk_veto is not None else default_risk_veto
+    gate_thresholds = {
+        "volume_zscore_20d": 0.60,
+        "adx_14": 0.55,
+        "turnover_ratio_20d": 0.55,
+        "hist_vol_60d": 0.75,
+        "hist_vol_20d": 0.75,
+    }
+    if cfg.gate_thresholds_yaml and cfg.gate_thresholds_yaml.exists():
+        import yaml
+        gate_thresholds.update(yaml.safe_load(cfg.gate_thresholds_yaml.read_text()))
+    directions = load_manifest(cfg.manifest)
 
-    equity, trades, holdings = simulate(features, ohlcv, cfg, frozen)
+    equity, trades, holdings = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
     metrics = compute_metrics(equity, trades, cfg)
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
