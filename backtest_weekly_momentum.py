@@ -61,6 +61,7 @@ class Config:
     gate_thresholds_str: Optional[str] = None
     veto_thresholds_str: Optional[str] = None
     quality_thresholds_str: Optional[str] = None
+    out_dir: Optional[str] = None
 
 
 def load_ohlcv(path: Path) -> pd.DataFrame:
@@ -122,6 +123,17 @@ def parse_thresholds(s: Optional[str], defaults: Dict[str, float]) -> Dict[str, 
                 k, v = pair.split("=", 1)
                 out[k.strip()] = float(v)
     return out
+
+
+def resolve_out_paths(cfg: Config) -> Path:
+    if cfg.out_dir:
+        out_dir = Path(cfg.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        return out_dir
+    out_prefix = Path(cfg.out_prefix) if cfg.out_prefix else Path("output/run")
+    out_dir = out_prefix.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
 
 
 def select_portfolio(
@@ -512,7 +524,7 @@ def parse_args() -> Config:
         gate_thresholds_str=args.gate_thresholds,
         veto_thresholds_str=args.veto_thresholds,
         quality_thresholds_str=args.quality_thresholds,
-        out_dir=args.out_dir,
+        out_dir=str(args.out_dir) if args.out_dir else None,
     )
 
 
@@ -553,13 +565,12 @@ def main() -> None:
     equity, trades, holdings, summary_df = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
     metrics = compute_metrics(equity, trades, cfg)
 
-    out_dir = cfg.out_dir / cfg.out_prefix
-    out_dir.mkdir(parents=True, exist_ok=True)
-    equity.to_csv(out_dir / "equity_curve.csv", index=False)
-    trades.to_csv(out_dir / "trades.csv", index=False)
-    holdings.to_csv(out_dir / "holdings.csv", index=False)
-    summary_df.to_csv(out_dir / "rebalance_summary.csv", index=False)
-    with (out_dir / "summary.json").open("w") as f:
+    resolved_out_dir = resolve_out_paths(cfg)
+    equity.to_csv(resolved_out_dir / "equity_curve.csv", index=False)
+    trades.to_csv(resolved_out_dir / "trades.csv", index=False)
+    holdings.to_csv(resolved_out_dir / "holdings.csv", index=False)
+    summary_df.to_csv(resolved_out_dir / "rebalance_summary.csv", index=False)
+    with (resolved_out_dir / "summary.json").open("w") as f:
         json.dump(metrics, f, indent=2)
 
     print("==== Backtest Summary ====")
