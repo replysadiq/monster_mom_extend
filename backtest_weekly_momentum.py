@@ -111,6 +111,16 @@ def load_manifest(path: Path) -> Dict[str, Dict[str, int]]:
     return directions
 
 
+def parse_thresholds(s: Optional[str], defaults: Dict[str, float]) -> Dict[str, float]:
+    out = defaults.copy()
+    if s:
+        for pair in s.split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                out[k.strip()] = float(v)
+    return out
+
+
 def select_portfolio(
     week_df: pd.DataFrame,
     cfg: Config,
@@ -119,11 +129,23 @@ def select_portfolio(
     gate_only: List[str],
     risk_veto: List[str],
     gate_thresholds: Dict[str, float],
+    summary_records: List[Dict[str, object]],
 ) -> pd.DataFrame:
     df = week_df.copy()
     df = df[df["adv_60d"] >= cfg.min_adv]
 
     if df.empty:
+        summary_records.append(
+            {
+                "week_date": week_df.index.get_level_values("week_date")[0],
+                "eligible_count": 0,
+                "selected_count": 0,
+                "cash_weight": 1.0,
+                "score_dispersion": np.nan,
+                "top_minus_median": np.nan,
+                "quality_ok": False,
+            }
+        )
         return pd.DataFrame(columns=["symbol", "score"])
 
     # Apply gates
@@ -140,6 +162,17 @@ def select_portfolio(
     df = df[eligible]
 
     if df.empty:
+        summary_records.append(
+            {
+                "week_date": week_df.index.get_level_values("week_date")[0],
+                "eligible_count": 0,
+                "selected_count": 0,
+                "cash_weight": 1.0,
+                "score_dispersion": np.nan,
+                "top_minus_median": np.nan,
+                "quality_ok": False,
+            }
+        )
         return pd.DataFrame(columns=["symbol", "score"])
 
     # Scoring features
@@ -153,13 +186,74 @@ def select_portfolio(
             ranks = 1 - ranks
         scores.append(ranks)
     if not scores:
+        summary_records.append(
+            {
+                "week_date": week_df.index.get_level_values("week_date")[0],
+                "eligible_count": len(df),
+                "selected_count": 0,
+                "cash_weight": 1.0,
+                "score_dispersion": np.nan,
+                "top_minus_median": np.nan,
+                "quality_ok": False,
+            }
+        )
         return pd.DataFrame(columns=["symbol", "score"])
     score_df = pd.concat(scores, axis=1)
     score_df["score"] = score_df.mean(axis=1)
     df = df.loc[score_df.index]
     df["score"] = score_df["score"]
 
+    score_dispersion = df["score"].std()
+    top_scores = df["score"].nlargest(min(len(df), cfg.top_n))
+    top_minus_median = top_scores.mean() - df["score"].median()
+    quality_rules = parse_thresholds(
+        cfg.quality_thresholds_str,
+        {"min_eligible": 5, "score_std": 0.08, "top_minus_median": 0.10},
+    )
+    quality_ok = (
+        (len(df) >= quality_rules["min_eligible"])
+        and (score_dispersion >= quality_rules["score_std"])
+        and (top_minus_median >= quality_rules["top_minus_median"])
+    )
+
+    if not quality_ok:
+        summary_records.append(
+            {
+                "week_date": week_df.index.get_level_values("week_date")[0],
+                "eligible_count": len(df),
+                "selected_count": 0,
+                "cash_weight": 1.0,
+                "score_dispersion": score_dispersion,
+                "top_minus_median": top_minus_median,
+                "quality_ok": False,
+            }
+        )
+        print(
+            f"{week_df.index.get_level_values('week_date')[0]} "
+            f"universe={len(week_df)}, eligible={len(df)}, selected=0, cash=1.0, quality_ok=False, "
+            f"score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}"
+        )
+        return pd.DataFrame(columns=["symbol", "score"])
+
     top = df.nlargest(cfg.top_n, "score")
+    selected_count = len(top)
+    cash_w = max(0.0, 1 - 0.1 * selected_count)
+    summary_records.append(
+        {
+            "week_date": week_df.index.get_level_values("week_date")[0],
+            "eligible_count": len(df),
+            "selected_count": selected_count,
+            "cash_weight": cash_w,
+            "score_dispersion": score_dispersion,
+            "top_minus_median": top_minus_median,
+            "quality_ok": True,
+        }
+    )
+    print(
+        f"{week_df.index.get_level_values('week_date')[0]} "
+        f"universe={len(week_df)}, eligible={len(df)}, selected={selected_count}, cash={cash_w:.2f}, "
+        f"quality_ok=True, score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}"
+    )
     return top[["score"]]
 
 
@@ -213,10 +307,11 @@ def simulate(
     equity_records = []
     trade_records = []
     holding_records = []
+    summary_records: List[Dict[str, object]] = []
 
     for reb_date in rebalance_dates:
         week_slice = features.xs(reb_date, level="week_date")
-        selection = select_portfolio(week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds)
+        selection = select_portfolio(week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds, summary_records)
         if selection.empty:
             # record equity unchanged
             equity_records.append(
@@ -325,7 +420,8 @@ def simulate(
 
     trades_df = pd.DataFrame(trade_records)
     holdings_df = pd.DataFrame(holding_records)
-    return equity_df, trades_df, holdings_df
+    summary_df = pd.DataFrame(summary_records)
+    return equity_df, trades_df, holdings_df, summary_df
 
 
 def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame, cfg: Config) -> Dict[str, float]:
@@ -377,6 +473,10 @@ def parse_args() -> Config:
     ap.add_argument("--gate_only", type=str, default=None, help="Comma-separated gate-only features override.")
     ap.add_argument("--risk_veto", type=str, default=None, help="Comma-separated risk veto features override.")
     ap.add_argument("--gate_thresholds_yaml", type=Path, default=None)
+    ap.add_argument("--gate-thresholds", type=str, default=None, help="Comma thresholds e.g. adx_14=0.55")
+    ap.add_argument("--veto-thresholds", type=str, default=None, help="Comma thresholds e.g. hist_vol_20d=0.75")
+    ap.add_argument("--quality-thresholds", type=str, default=None, help="Comma thresholds e.g. min_eligible=5,score_std=0.08,top_minus_median=0.10")
+    ap.add_argument("--out-dir", type=Path, default=Path("results"))
     args = ap.parse_args()
     start = pd.to_datetime(args.start)
     end = pd.to_datetime(args.end)
@@ -406,6 +506,10 @@ def parse_args() -> Config:
         gate_only=args.gate_only.split(",") if args.gate_only else None,
         risk_veto=args.risk_veto.split(",") if args.risk_veto else None,
         gate_thresholds_yaml=args.gate_thresholds_yaml,
+        gate_thresholds_str=args.gate_thresholds,
+        veto_thresholds_str=args.veto_thresholds,
+        quality_thresholds_str=args.quality_thresholds,
+        out_dir=args.out_dir,
     )
 
 
@@ -436,14 +540,16 @@ def main() -> None:
         gate_thresholds.update(yaml.safe_load(cfg.gate_thresholds_yaml.read_text()))
     directions = load_manifest(cfg.manifest)
 
-    equity, trades, holdings = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
+    equity, trades, holdings, summary_df = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
     metrics = compute_metrics(equity, trades, cfg)
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    equity.to_csv(RESULTS_DIR / f"{cfg.out_prefix}_equity_curve.csv", index=False)
-    trades.to_csv(RESULTS_DIR / f"{cfg.out_prefix}_trades.csv", index=False)
-    holdings.to_csv(RESULTS_DIR / f"{cfg.out_prefix}_holdings.csv", index=False)
-    with (RESULTS_DIR / f"{cfg.out_prefix}_summary.json").open("w") as f:
+    out_dir = cfg.out_dir / cfg.out_prefix
+    out_dir.mkdir(parents=True, exist_ok=True)
+    equity.to_csv(out_dir / "equity_curve.csv", index=False)
+    trades.to_csv(out_dir / "trades.csv", index=False)
+    holdings.to_csv(out_dir / "holdings.csv", index=False)
+    summary_df.to_csv(out_dir / "rebalance_summary.csv", index=False)
+    with (out_dir / "summary.json").open("w") as f:
         json.dump(metrics, f, indent=2)
 
     print("==== Backtest Summary ====")
