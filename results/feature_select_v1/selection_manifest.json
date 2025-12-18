@@ -1,0 +1,38 @@
+{
+  "params": {
+    "min_coverage": 0.8,
+    "min_weeks": 80,
+    "min_pos_frac": 0.55,
+    "topk_pre": 20,
+    "corr_thresh": 0.85,
+    "min_n_week": 50
+  },
+  "inputs": {
+    "features": "data/weekly_features_yahoo.parquet",
+    "index_weekly": "results/composite_eval_yahoo_3y_clean_index/index_weekly_close.csv",
+    "sha256": {
+      "features": "b8d4b4682d90706e3eaf51c49663e1db7de6b7af49028ba19419ebf7ee7bc475",
+      "index_weekly": "2316350de44fe63b3a0ed7827d416f71360fb1f439a7a354db1362611808d100"
+    }
+  },
+  "selected": {
+    "mr_1w": [
+      "ret_1w",
+      "ret_1d",
+      "ret_2w",
+      "rsi_14",
+      "adv_20d",
+      "ema_slope_20d",
+      "turnover_ratio_20d"
+    ],
+    "trend_4w": [
+      "adv_20d",
+      "sma_50d",
+      "beta_60d",
+      "ret_1d",
+      "donchian_pos_20",
+      "hist_vol_60d",
+      "ret_6m"
+    ]
+  }
+}
