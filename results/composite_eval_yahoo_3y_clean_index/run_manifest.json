@@ -1,0 +1,14 @@
+{
+  "ohlcv": "data/ohlcv_yahoo.parquet",
+  "features": "data/weekly_features_yahoo.parquet",
+  "index": "data/index_nifty500_clean.csv",
+  "start": "2022-12-19",
+  "end": "2025-12-17",
+  "rolling_window": 26,
+  "nonoverlap_step": 4,
+  "sha256": {
+    "ohlcv": "8cdd0afa829b742a2a3f1b4133c25b773f73cdf65665c2e38e75fc7923248248",
+    "features": "b8d4b4682d90706e3eaf51c49663e1db7de6b7af49028ba19419ebf7ee7bc475",
+    "index": "ea8792892da1e45747a01eee77c449cc944604d1c310748f7763387c577b9759"
+  }
+}
