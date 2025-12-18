@@ -1,0 +1,32 @@
+feature,group,core_or_experimental,median_delta,iqr_delta,keep_drop,notes
+turnover_ratio_20d,liquidity,experimental,0.00019593860181913586,0.0008234716786404499,keep,keep: enforced group minimum
+volume_zscore_20d,liquidity,experimental,0.00013272457326527273,0.0018817475403915237,drop,drop: low median & low IQR
+adv_median_60d,liquidity,experimental,-0.0003083293444098885,0.0004581477071967131,drop,drop: negative median
+adv_60d,liquidity,core,-0.000576028133420996,0.000561837437444531,drop,drop: negative median
+adv_20d,liquidity,core,-0.00109839951502954,0.0012660329532304848,drop,drop: negative median
+ret_3m,momentum,core,0.0026337485887197587,0.002406665570978739,keep,keep: enforced group minimum
+ret_8w,momentum,core,0.00011746000654310059,0.0016774237471074939,keep,keep: enforced group minimum
+ret_1w,momentum,experimental,1.1027742078076371e-05,0.0002536786272188497,drop,drop: low median & low IQR
+ret_2w,momentum,experimental,-0.000132104647594417,0.0008653158349184284,drop,drop: negative median
+ret_6m,momentum,core,-0.000320220345410378,0.0012993645710084535,drop,drop: negative median
+ret_1m,momentum,core,-0.001968419188164379,0.0012933236539640215,drop,drop: negative median
+ret_12m,momentum,core,-0.002475725956998033,0.0035084734159656324,drop,drop: negative median
+excess_ret_3m_vs_index,momentum,experimental,-0.008131499661530012,0.0325805154568095,drop,drop: negative median
+supertrend_state_10_3,trend,experimental,0.0019783753579791716,0.0021095402205364468,keep,keep: enforced group minimum
+adx_14,trend,experimental,0.0011983731653435953,0.002966143392429083,keep,keep: enforced group minimum
+rsi_14,trend,experimental,0.0008406841663157508,0.0027185636480586703,drop,drop: low median & low IQR
+ema_slope_20d,trend,experimental,0.0003850676842418522,0.0015515866677349765,drop,drop: low median & low IQR
+bollinger_pctb_20_2,trend,experimental,9.193738507246581e-05,0.00023611732205774724,drop,drop: low median & low IQR
+pct_above_20d_sma,trend,core,9.012837995351565e-05,0.0009145293165863448,drop,drop: low median & low IQR
+pct_above_200d_sma,trend,core,6.342179217265519e-05,0.0026687300478366177,drop,drop: low median & low IQR
+pct_above_50d_sma,trend,core,-3.2283769746479585e-05,0.0034181224290678247,drop,drop: negative median
+donchian_pos_20,trend,experimental,-6.382560531464847e-05,0.0003772511765519777,drop,drop: negative median
+bollinger_bw_20_2,trend,experimental,-0.00014781323436819884,0.00038228296274180203,drop,drop: negative median
+macd_hist_12_26_9,trend,experimental,-0.00015022994199992337,0.002225502092347353,drop,drop: negative median
+pct_from_52w_high,trend,experimental,-0.001142589162796294,0.001888135044857042,drop,drop: negative median
+hist_vol_20d,volatility,experimental,0.004230947954746256,0.0049182118667730635,keep,keep: enforced group minimum
+hist_vol_60d,volatility,experimental,0.002291892328808968,0.006333327893351348,drop,drop: low median & low IQR
+gk_vol_20d,volatility,experimental,0.00046244648593760237,0.0005562209439371941,drop,drop: low median & low IQR
+hv_percentile_1y,volatility,experimental,0.00020756970079338242,0.006299248058479876,drop,drop: low median & low IQR
+atr_pct_14,volatility,core,-2.44665848970916e-06,6.106677446930279e-05,drop,drop: negative median
+beta_60d,volatility,experimental,-1.4184116526365188e-05,0.0005134599112785228,drop,drop: negative median

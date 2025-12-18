@@ -1,0 +1,3 @@
+gate_feature,base_momentum,target_col,median_base_ic,median_gated_ic,lift,n_weeks_used
+adx_14,ret_3m,target_forward_4w_excess,0.027025124979787915,0.032651868715613735,0.0056267437358258204,193
+turnover_ratio_20d,ret_3m,target_forward_4w_excess,0.027025124979787915,0.03116416407251419,0.004139039092726275,193

@@ -4,13 +4,13 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
+from price_scale import apply_price_scale, choose_scale_factor
 
 
 DATA_DIR = Path("data")
 OHLVC_PATH = DATA_DIR / "ohlcv.parquet"
 INDEX_PATH = DATA_DIR / "index_nifty500.csv"
 OUTPUT_PATH = DATA_DIR / "weekly_features.parquet"
-
 
 def _group_roll(series: pd.Series, window: int, func: str, min_periods: int | None = None) -> pd.Series:
     """Group-wise rolling helper."""
@@ -31,15 +31,25 @@ def _group_ewm(series: pd.Series, span: int) -> pd.Series:
 
 
 def load_data(
-    start: Optional[pd.Timestamp] = None, end: Optional[pd.Timestamp] = None
+    start: Optional[pd.Timestamp] = None, end: Optional[pd.Timestamp] = None, ohlcv_path: Path = OHLVC_PATH
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load stock and index data, optionally date-filtered."""
-    stocks = pd.read_parquet(OHLVC_PATH)
+    stocks = pd.read_parquet(ohlcv_path)
     stocks["date"] = pd.to_datetime(stocks["date"])
+    if stocks["date"].dt.tz is not None:
+        stocks["date"] = stocks["date"].dt.tz_localize(None)
     if start is not None:
         stocks = stocks[stocks["date"] >= start]
     if end is not None:
         stocks = stocks[stocks["date"] <= end]
+    # Normalize price scale per symbol using shared scaler
+    stocks, scale = apply_price_scale(stocks, symbol_col="symbol")
+    scale_report = scale.rename("scale_factor").to_frame()
+    med_after = stocks.groupby("symbol")["close"].median().rename("median_close_scaled")
+    med_raw = (scale_report["scale_factor"] * med_after).rename("median_close_raw")
+    scale_report = scale_report.join(med_raw).join(med_after)
+    scale_report.to_csv(DATA_DIR / "scale_factors_by_symbol.csv")
+
     stocks = stocks.sort_values(["symbol", "date"]).set_index(["symbol", "date"])
 
     index = pd.read_csv(INDEX_PATH)
@@ -319,10 +329,17 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
             "index_trend_state",
             "index_vol_20d",
             "index_hv_percentile",
+            "target_forward_1w_excess",
+            "target_forward_4w_excess",
+            "fwd_1w_ret",
+            "fwd_1w_ret_index",
+            "fwd_4w_ret",
+            "fwd_4w_ret_index",
         }
     ]
     weekly_panel = weekly_panel[feature_cols]
-    weekly_panel = weekly_panel.dropna()
+    # Only drop rows missing close; keep others for diagnostics
+    weekly_panel = weekly_panel.dropna(subset=["close"])
     return weekly_panel
 
 
@@ -336,6 +353,12 @@ def parse_args() -> argparse.Namespace:
         default=OUTPUT_PATH,
         help="Output parquet path for weekly features.",
     )
+    parser.add_argument(
+        "--ohlcv",
+        type=Path,
+        default=OHLVC_PATH,
+        help="Input daily OHLCV parquet path.",
+    )
     return parser.parse_args()
 
 
@@ -344,7 +367,7 @@ def main() -> None:
     start = pd.to_datetime(args.start) if args.start else None
     end = pd.to_datetime(args.end) if args.end else None
 
-    stocks, index = load_data(start=start, end=end)
+    stocks, index = load_data(start=start, end=end, ohlcv_path=args.ohlcv)
     index_feat = compute_index_features(index)
     daily_feat = compute_stock_features(stocks, index_feat)
     weekly = build_weekly_panel(daily_feat, index_feat)

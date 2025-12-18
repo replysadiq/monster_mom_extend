@@ -1,0 +1,6 @@
+turnover_ratio_20d
+ret_1m
+ret_1w
+donchian_pos_20
+rsi_14
+hist_vol_20d

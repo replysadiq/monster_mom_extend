@@ -1,0 +1,6 @@
+volume_zscore_20d
+ret_8w
+ret_1w
+donchian_pos_20
+pct_above_20d_sma
+hist_vol_60d

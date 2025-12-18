@@ -1,0 +1,465 @@
+=== evaluate_composite_signals.py ===
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Evaluate composite momentum signals on weekly data.")
+    ap.add_argument("--ohlcv", type=Path, default=Path("data/ohlcv_yahoo.parquet"))
+    ap.add_argument("--features", type=Path, required=True)
+    ap.add_argument("--index", type=Path, default=Path("data/index_nifty500.csv"))
+    ap.add_argument("--start", type=str, default=None)
+    ap.add_argument("--end", type=str, default=None)
+    ap.add_argument("--out-dir", type=Path, default=Path("results/composite_eval_yahoo_3y"))
+    ap.add_argument("--rolling-window", type=int, default=26)
+    return ap.parse_args()
+
+
+def load_ohlcv(path: Path) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    df["date"] = pd.to_datetime(df["date"])
+    if df["date"].dt.tz is not None:
+        df["date"] = df["date"].dt.tz_localize(None)
+    return df
+
+
+def weekly_close(df: pd.DataFrame) -> pd.Series:
+    df = df.sort_values(["symbol", "date"])
+    wk = (
+        df.set_index("date")
+        .groupby("symbol")
+        .resample("W-FRI")
+        .last()
+    )
+    if "symbol" in wk.columns:
+        wk = wk.drop(columns=["symbol"])
+    wk = wk.reset_index().rename(columns={"date": "week_date"})
+    wk = wk.set_index(["symbol", "week_date"]).sort_index()
+    return wk["close"]
+
+
+def weekly_index(path: Optional[Path], start: pd.Timestamp, end: pd.Timestamp, proxy_from: Optional[pd.Series]) -> pd.Series:
+    if path and path.exists():
+        idx = pd.read_csv(path)
+        idx["date"] = pd.to_datetime(idx["date"])
+        idx = idx[(idx["date"] >= start) & (idx["date"] <= end)]
+        idx_w = idx.set_index("date")["close"].resample("W-FRI").last()
+        idx_w.index.name = "week_date"
+        return idx_w
+    if proxy_from is None:
+        raise RuntimeError("No index provided and no proxy series available.")
+    pivot = proxy_from.reset_index().pivot(index="week_date", columns="symbol", values="close")
+    med = pivot.median(axis=1).rename("index_close")
+    med.index.name = "week_date"
+    return med
+
+
+def compute_targets(close: pd.Series, idx_close: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+    """Compute forward returns and excess returns."""
+    idx_aligned = idx_close.reindex(close.index.get_level_values("week_date"))
+    idx_aligned.index = close.index
+    fwd1 = close.groupby(level=0).shift(-1) / close - 1
+    fwd4 = close.groupby(level=0).shift(-4) / close - 1
+    idx_fwd1 = idx_aligned.groupby(level=0).shift(-1) / idx_aligned - 1
+    idx_fwd4 = idx_aligned.groupby(level=0).shift(-4) / idx_aligned - 1
+    target1 = fwd1 - idx_fwd1
+    target4 = fwd4 - idx_fwd4
+    return fwd1, fwd4, target1, target4
+
+
+def zscore_weekly(series: pd.Series) -> pd.Series:
+    """Z-score per week_date across symbols."""
+    def _z(s: pd.Series) -> pd.Series:
+        if len(s) == 0:
+            return s
+        mu = s.mean()
+        sd = s.std(ddof=0)
+        if sd == 0 or np.isnan(sd):
+            return pd.Series(np.nan, index=s.index)
+        return (s - mu) / sd
+    return series.groupby(level="week_date", group_keys=False).apply(_z)
+
+
+def build_composites(
+    feats: pd.DataFrame,
+    mr_feats: Dict[str, int],
+    trend_feats: Dict[str, int],
+    min_feat: int = 2,
+) -> Tuple[pd.Series, pd.Series]:
+    df = feats.copy()
+    # compute z-scores per feature
+    for col, sign in {**mr_feats, **trend_feats}.items():
+        if col not in df.columns:
+            continue
+        z = zscore_weekly(df[col])
+        if sign == -1:
+            z = -z
+        df[col] = z
+    def _compose(cols: List[str]) -> pd.Series:
+        present = [c for c in cols if c in df.columns]
+        if not present:
+            return pd.Series(dtype=float)
+        zmat = df[present]
+        cnt = zmat.notna().sum(axis=1)
+        comp = zmat.mean(axis=1)
+        comp[cnt < min_feat] = np.nan
+        return comp
+    score_mr = _compose(list(mr_feats.keys()))
+    score_trend = _compose(list(trend_feats.keys()))
+    return score_mr, score_trend
+
+
+def ic_timeseries(score: pd.Series, target: pd.Series) -> pd.DataFrame:
+    records = []
+    weeks = sorted(set(score.dropna().index.get_level_values("week_date")) & set(target.dropna().index.get_level_values("week_date")))
+    for wk in weeks:
+        s = score.xs(wk, level="week_date", drop_level=False)
+        t = target.xs(wk, level="week_date", drop_level=False).rename("target")
+        merged = pd.concat([s.rename("score"), t], axis=1).dropna()
+        if len(merged) < 20:
+            continue
+        ic, _ = spearmanr(merged["score"], merged["target"])
+        if np.isnan(ic):
+            continue
+        records.append({"week_date": wk, "ic": ic, "n_symbols": len(merged)})
+    return pd.DataFrame(records)
+
+
+def rolling_ic(ts: pd.DataFrame, window: int) -> pd.DataFrame:
+    ts = ts.sort_values("week_date").set_index("week_date")
+    ts["ic_rolling_mean"] = ts["ic"].rolling(window, min_periods=1).mean()
+    return ts.reset_index()
+
+
+def decile_backtest(score: pd.Series, target: pd.Series, horizon: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    records_decile = []
+    ts_records = []
+    weeks = sorted(set(score.dropna().index.get_level_values("week_date")) & set(target.dropna().index.get_level_values("week_date")))
+    for wk in weeks:
+        s = score.xs(wk, level="week_date", drop_level=False)
+        t = target.xs(wk, level="week_date", drop_level=False).rename("target")
+        merged = pd.concat([s.rename("score"), t], axis=1).dropna()
+        if len(merged) < 50:
+            continue
+        try:
+            merged["decile"] = pd.qcut(merged["score"], 10, labels=False, duplicates="drop")
+        except ValueError:
+            continue
+        for d in sorted(merged["decile"].unique()):
+            m = merged[merged["decile"] == d]
+            records_decile.append({"decile": int(d), "target": m["target"].mean()})
+        top = merged[merged["decile"] == merged["decile"].max()]["target"].mean()
+        bot = merged[merged["decile"] == merged["decile"].min()]["target"].mean()
+        ts_records.append(
+            {
+                "week_date": wk,
+                "top_decile_ret": top,
+                "bottom_decile_ret": bot,
+                "spread": top - bot,
+            }
+        )
+    decile_df = pd.DataFrame(records_decile)
+    if not decile_df.empty:
+        decile_df = decile_df.groupby("decile")["target"].mean().reset_index().rename(columns={"target": "mean_target_return"})
+    ts_df = pd.DataFrame(ts_records).sort_values("week_date")
+    if not ts_df.empty and horizon == "1w":
+        ts_df["cum_spread"] = (1 + ts_df["spread"]).cumprod()
+        ts_df["top_decile_cum"] = (1 + ts_df["top_decile_ret"]).cumprod()
+    return decile_df, ts_df
+
+
+def nonoverlap_backtest(score: pd.Series, target_raw: pd.Series, target_excess: pd.Series, step: int = 4) -> pd.DataFrame:
+    weeks = sorted(
+        set(score.dropna().index.get_level_values("week_date"))
+        & set(target_raw.dropna().index.get_level_values("week_date"))
+        & set(target_excess.dropna().index.get_level_values("week_date"))
+    )
+    records = []
+    for idx, wk in enumerate(weeks):
+        if idx % step != 0:
+            continue
+        s = score.xs(wk, level="week_date", drop_level=False)
+        t_raw = target_raw.xs(wk, level="week_date", drop_level=False).rename("t_raw")
+        t_exc = target_excess.xs(wk, level="week_date", drop_level=False).rename("t_excess")
+        merged = pd.concat([s.rename("score"), t_raw, t_exc], axis=1).dropna()
+        if len(merged) < 50:
+            continue
+        try:
+            merged["decile"] = pd.qcut(merged["score"], 10, labels=False, duplicates="drop")
+        except ValueError:
+            continue
+        top_raw = merged[merged["decile"] == merged["decile"].max()]["t_raw"].mean()
+        bot_raw = merged[merged["decile"] == merged["decile"].min()]["t_raw"].mean()
+        top_exc = merged[merged["decile"] == merged["decile"].max()]["t_excess"].mean()
+        bot_exc = merged[merged["decile"] == merged["decile"].min()]["t_excess"].mean()
+        records.append(
+            {
+                "week_date": wk,
+                "top_ret_raw": top_raw,
+                "bot_ret_raw": bot_raw,
+                "spread_raw": top_raw - bot_raw,
+                "top_ret_excess": top_exc,
+                "bot_ret_excess": bot_exc,
+                "spread_excess": top_exc - bot_exc,
+            }
+        )
+    df = pd.DataFrame(records).sort_values("week_date")
+    if not df.empty:
+        df["equity_top_raw"] = (1 + df["top_ret_raw"]).cumprod()
+        df["equity_spread_raw"] = (1 + df["spread_raw"]).cumprod()
+        df["equity_top_excess"] = (1 + df["top_ret_excess"]).cumprod()
+        df["equity_spread_excess"] = (1 + df["spread_excess"]).cumprod()
+    return df
+
+
+def summary_from_ic(ts: pd.DataFrame) -> Dict[str, float]:
+    ic_arr = ts["ic"].to_numpy()
+    n = len(ic_arr)
+    return {
+        "ic_mean": float(ic_arr.mean()) if n else np.nan,
+        "ic_std": float(ic_arr.std(ddof=0)) if n else np.nan,
+        "ic_tstat": float(ic_arr.mean() / (ic_arr.std(ddof=0) / np.sqrt(n))) if n and ic_arr.std(ddof=0) > 0 else np.nan,
+        "ic_pos_frac": float((ic_arr > 0).mean()) if n else np.nan,
+        "n_weeks": n,
+        "avg_n_symbols": float(ts["n_symbols"].mean()) if not ts.empty else np.nan,
+    }
+
+
+def main() -> None:
+    args = parse_args()
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    ohlcv = load_ohlcv(args.ohlcv)
+    start = pd.to_datetime(args.start) if args.start else ohlcv["date"].min()
+    end = pd.to_datetime(args.end) if args.end else ohlcv["date"].max()
+    ohlcv = ohlcv[(ohlcv["date"] >= start) & (ohlcv["date"] <= end)]
+
+    wk_close = weekly_close(ohlcv)
+
+    feats = pd.read_parquet(args.features)
+    if not isinstance(feats.index, pd.MultiIndex):
+        feats = feats.set_index(["symbol", "week_date"])
+    bad_cols = [c for c in feats.columns if c.startswith("target_") or c.startswith("fwd_") or "forward" in c]
+    if bad_cols:
+        raise RuntimeError(f"Features parquet contains target/forward columns: {bad_cols}")
+    feats.index = pd.MultiIndex.from_tuples(feats.index, names=["symbol", "week_date"])
+    feats = feats.sort_index()
+
+    idx_close = None
+    if args.index and args.index.exists():
+        idx_close = weekly_index(args.index, start, end, None)
+    else:
+        idx_close = weekly_index(None, start, end, wk_close)
+
+    # align to common weeks and drop last 4 weeks for targets
+    max_week = min(wk_close.index.get_level_values("week_date").max(), idx_close.index.max())
+    cutoff = max_week - pd.Timedelta(weeks=4)
+    wk_close = wk_close[wk_close.index.get_level_values("week_date") <= cutoff]
+    feats = feats[feats.index.get_level_values("week_date") <= cutoff]
+    idx_close = idx_close[idx_close.index <= cutoff]
+
+    fwd1, fwd4, target1, target4 = compute_targets(wk_close, idx_close)
+    fwd1.name = "fwd_1w_ret"
+    fwd4.name = "fwd_4w_ret"
+
+    # Target sanity checks
+    overall = {
+        "fwd_1w_min": float(fwd1.min()),
+        "fwd_1w_max": float(fwd1.max()),
+        "fwd_1w_mean": float(fwd1.mean()),
+        "fwd_1w_median": float(fwd1.median()),
+        "fwd_4w_min": float(fwd4.min()),
+        "fwd_4w_max": float(fwd4.max()),
+        "fwd_4w_mean": float(fwd4.mean()),
+        "fwd_4w_median": float(fwd4.median()),
+    }
+    wstats = fwd4.reset_index().groupby("week_date")["fwd_4w_ret"].agg(
+        median="median",
+        pct05=lambda x: np.percentile(x, 5),
+        pct95=lambda x: np.percentile(x, 95),
+    )
+    out_dir = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([overall]).to_csv(out_dir / "target_sanity.csv", index=False)
+    wstats.to_csv(out_dir / "target_sanity_per_week.csv")
+    p5 = float(np.percentile(fwd4.dropna(), 5))
+    p95 = float(np.percentile(fwd4.dropna(), 95))
+    med = float(fwd4.median())
+    if not (-0.20 <= med <= 0.20) or p5 <= -0.60 or p95 >= 0.60:
+        close_t4 = wk_close.groupby(level=0).shift(-4).rename("close_t4")
+        extremes = (
+            pd.concat([fwd4.rename("fwd_4w_ret"), wk_close.rename("close_t"), close_t4], axis=1)
+            .reset_index()
+            .dropna()
+            .sort_values("fwd_4w_ret")
+        )
+        print("Target sanity failed. Extremes:")
+        print(extremes.head(20))
+        raise RuntimeError("fwd_4w_ret sanity check failed.")
+
+    mr_feats = {"ret_1w": -1, "ret_2w": -1, "pct_above_20d_sma": -1}
+    trend_feats = {"sma_50d": -1, "sma_200d": -1, "atr_pct_14": 1}
+    score_mr, score_trend = build_composites(feats, mr_feats, trend_feats, min_feat=2)
+
+    ts_mr = ic_timeseries(score_mr, target1)
+    ts_trend = ic_timeseries(score_trend, target4)
+
+    roll_mr = rolling_ic(ts_mr.assign(composite="mr_1w"), args.rolling_window)
+    roll_trend = rolling_ic(ts_trend.assign(composite="trend_4w"), args.rolling_window)
+
+    dec_mr, ts_spread_mr = decile_backtest(score_mr, target1, "1w")
+    dec_trend, ts_spread_trend = decile_backtest(score_trend, target4, "4w")
+    nonoverlap_trend = nonoverlap_backtest(score_trend, fwd4, target4, step=4)
+
+    summ = pd.DataFrame(
+        [
+            {"composite": "mr_1w", **summary_from_ic(ts_mr)},
+            {"composite": "trend_4w", **summary_from_ic(ts_trend)},
+        ]
+    )
+
+    ts_all = pd.concat(
+        [
+            ts_mr.assign(composite="mr_1w"),
+            ts_trend.assign(composite="trend_4w"),
+        ],
+        ignore_index=True,
+    )
+    roll_all = pd.concat([roll_mr.assign(composite="mr_1w"), roll_trend.assign(composite="trend_4w")], ignore_index=True)
+
+    summ.to_csv(args.out_dir / "ic_summary.csv", index=False)
+    ts_all.to_csv(args.out_dir / "ic_timeseries.csv", index=False)
+    roll_all.to_csv(args.out_dir / f"ic_rolling_{args.rolling_window}w.csv", index=False)
+    dec_mr.to_csv(args.out_dir / "deciles_mr_1w.csv", index=False)
+    dec_trend.to_csv(args.out_dir / "deciles_trend_4w.csv", index=False)
+    ts_spread_mr.to_csv(args.out_dir / "decile_spread_timeseries_mr_1w.csv", index=False)
+    ts_spread_trend.to_csv(args.out_dir / "decile_spread_timeseries_trend_4w.csv", index=False)
+    nonoverlap_trend.to_csv(args.out_dir / "equity_nonoverlap_trend_4w.csv", index=False)
+
+    manifest = {
+        "ohlcv": str(args.ohlcv),
+        "features": str(args.features),
+        "index": str(args.index) if args.index else None,
+        "start": str(start.date()),
+        "end": str(end.date()),
+        "rolling_window": args.rolling_window,
+    }
+    with (args.out_dir / "run_manifest.json").open("w") as f:
+        json.dump(manifest, f, indent=2)
+
+    for comp, ts in [("mr_1w", ts_mr), ("trend_4w", ts_trend)]:
+        summ_row = summ[summ["composite"] == comp].iloc[0]
+        print(
+            f"{comp}: ic_mean={summ_row['ic_mean']:.4f}, tstat={summ_row['ic_tstat']:.2f}, "
+            f"pos_frac={summ_row['ic_pos_frac']:.2f}, n_weeks={int(summ_row['n_weeks'])}"
+        )
+    if not ts_spread_mr.empty:
+        print(
+            f"mr_1w spread mean={ts_spread_mr['spread'].mean():.4f}, final_cum={ts_spread_mr['cum_spread'].iloc[-1]:.4f}"
+        )
+    if not ts_spread_trend.empty:
+        print(
+            f"4W diagnostic (non-compounded) spread mean={ts_spread_trend['spread'].mean():.4f}"
+        )
+    if not nonoverlap_trend.empty:
+        print(
+            f"4W non-overlapping backtest equity_top_raw={nonoverlap_trend['equity_top_raw'].iloc[-1]:.4f}, "
+            f"equity_spread_raw={nonoverlap_trend['equity_spread_raw'].iloc[-1]:.4f}, "
+            f"equity_top_excess={nonoverlap_trend['equity_top_excess'].iloc[-1]:.4f}, "
+            f"equity_spread_excess={nonoverlap_trend['equity_spread_excess'].iloc[-1]:.4f}"
+        )
+
+
+if __name__ == "__main__":
+    main()
+
+=== index_nifty500.csv (first 40 lines) ===
+date,close
+2015-09-26,319.5475870368161
+2015-09-27,321.71332458907006
+2015-09-28,326.7134517065231
+2015-09-29,332.78245390366124
+2015-09-30,333.30667529717795
+2015-10-01,342.1137439079342
+2015-10-02,351.21037809491946
+2015-10-03,355.6291352720619
+2015-10-04,353.60392424523485
+2015-10-05,355.59480284409295
+2015-10-06,355.6979577066894
+2015-10-07,363.0980475756717
+2015-10-08,368.8728560093872
+2015-10-09,377.11761393995863
+2015-10-10,381.7587819221804
+2015-10-11,389.23316861959506
+2015-10-12,390.96887216010117
+2015-10-13,399.9922709155616
+2015-10-14,406.4860547743906
+2015-10-15,409.8790350460817
+2015-10-16,413.1210618614306
+2015-10-17,410.73861883503605
+2015-10-18,413.84425998764686
+2015-10-19,426.6012217509418
+2015-10-20,434.90658015681726
+2015-10-21,441.09437046239935
+2015-10-22,445.14317649051554
+2015-10-23,456.0528273473032
+2015-10-24,458.0355583962369
+2015-10-25,462.60282315570043
+2015-10-26,466.6568270904215
+2015-10-27,475.38538049185746
+2015-10-28,481.447247698761
+2015-10-29,487.8441910781916
+2015-10-30,498.19927959999546
+2015-10-31,509.0428871959585
+2015-11-01,518.3085301562714
+2015-11-02,527.2401023187045
+2015-11-03,540.8266543997803
+
+(Index close column: close)
+
+=== console_run_output ===
+mr_1w: ic_mean=0.0297, tstat=3.17, pos_frac=0.58, n_weeks=142
+trend_4w: ic_mean=0.0540, tstat=4.48, pos_frac=0.59, n_weeks=131
+mr_1w spread mean=0.0028, final_cum=1.4508
+4W diagnostic (non-compounded) spread mean=0.0322
+4W non-overlapping backtest equity_top_raw=3.9162, equity_spread_raw=2.8835, equity_top_excess=0.0000, equity_spread_excess=2.8835
+
+=== target_sanity.csv (top 25) ===
+fwd_1w_min,fwd_1w_max,fwd_1w_mean,fwd_1w_median,fwd_4w_min,fwd_4w_max,fwd_4w_mean,fwd_4w_median
+-0.7958115897850282,0.6491553620312696,0.005782064800913411,0.0022060883833154854,-0.7992600943692174,1.1442076901355422,0.02278539044261069,0.014107336226850786
+
+=== target_sanity.csv (bottom 25) ===
+fwd_1w_min,fwd_1w_max,fwd_1w_mean,fwd_1w_median,fwd_4w_min,fwd_4w_max,fwd_4w_mean,fwd_4w_median
+-0.7958115897850282,0.6491553620312696,0.005782064800913411,0.0022060883833154854,-0.7992600943692174,1.1442076901355422,0.02278539044261069,0.014107336226850786
+
+=== equity_nonoverlap_trend_4w.csv (top 10) ===
+week_date,top_ret_raw,bot_ret_raw,spread_raw,top_ret_excess,bot_ret_excess,spread_excess,equity_top_raw,equity_spread_raw,equity_top_excess,equity_spread_excess
+2023-03-03,-0.02277114780407519,-0.01067546321806146,-0.012095684586013731,-0.4783399698394675,-0.4662442852534539,-0.012095684586013622,0.9772288521959248,0.9879043154139863,0.5216600301605325,0.9879043154139864
+2023-03-31,0.12305605722037381,0.023299190351590247,0.09975686686878357,-0.44720186831015324,-0.5469587351789369,0.09975686686878366,1.0974827817491468,1.0864545546858362,0.2883726900500115,1.0864545546858362
+2023-04-28,0.06097551178479509,0.038929680524393835,0.022045831260401258,-0.46471297007269463,-0.48675880133309585,0.022045831260401216,1.1644023560413015,1.1104063484705344,0.15436216076901804,1.1104063484705344
+2023-05-26,0.06709616461005706,0.04652601315183357,0.02057015145822349,-0.36188560371162415,-0.38245575516984776,0.020570151458223607,1.2425292881945869,1.1332475752387463,0.09850071702889117,1.1332475752387463
+2023-06-23,0.15461496280231715,0.04099926045053021,0.11361570235178695,-0.5576543105658508,-0.6712700129176378,0.11361570235178697,1.4346429078695826,1.262002294437956,0.043571367583902905,1.262002294437956
+2023-07-21,0.11476738513165473,0.016031948704078047,0.09873543642757668,-0.3465803394204735,-0.4453157758480502,0.0987354364275767,1.599293123003448,1.386606641751891,0.02847038821765962,1.386606641751891
+2023-08-18,0.19713668846318974,0.053087711922097214,0.14404897654109253,-0.4102380540126209,-0.5542870305537134,0.1440489765410925,1.9145724731543006,1.5863459093613324,0.016790751558263085,1.5863459093613324
+2023-09-15,0.05408180395142139,-0.007872563489045952,0.06195436744046734,-0.4305711367232109,-0.4925255041636782,0.061954367440467284,2.0181160062982197,1.6846269667175868,0.009561138573384724,1.6846269667175864
+2023-10-13,0.048429656797754204,-0.005771305317598853,0.05420096211535306,-0.5804906314327151,-0.634691593548068,0.05420096211535297,2.115852671861297,1.7759353691191488,0.004010987205704937,1.7759353691191482
+
+=== equity_nonoverlap_trend_4w.csv (bottom 10) ===
+2024-12-06,-0.020627467617512853,-0.00438525039408659,-0.016242217223426263,-0.5152100731440662,-0.49896785592064,-0.01624221722342617,3.9693026401176867,2.8292483214748927,1.0250926742725019e-07,2.829248321474893
+2025-01-03,-0.11519257007592898,-0.08244626814902153,-0.032746301926907445,-0.6624893355781344,-0.629743033651227,-0.03274630192690742,3.51206846759336,2.73660090171368,3.459797095876992e-08,2.7366009017136803
+2025-01-31,-0.1461861152022035,-0.08941797753028917,-0.05676813767191434,-0.5914826766847624,-0.5347145390128483,-0.05676813767191413,2.998652821991731,2.5812491649721125,1.4133870488215013e-08,2.581249164972114
+2025-02-28,0.07942054862014736,0.07467489579839227,0.004745652821755084,-0.43902810651610613,-0.44377375933786123,0.0047456528217550975,3.2368074742356674,2.5934988773555157,7.928704090030104e-09,2.593498877355517
+2025-03-28,0.03908819571487296,0.00527660415170252,0.033811591563170436,-0.5077100892947495,-0.54152168085792,0.033811591563170484,3.3633284382799546,2.6811892021162014,3.9032210284892745e-09,2.6811892021162027
+2025-04-25,0.11352815698877737,0.05745845733211235,0.05606969965666502,-0.5795991493363957,-0.6356688489930608,0.056069699656665084,3.745160917225821,2.83152267540155,1.6409174407049596e-09,2.8315226754015512
+2025-05-23,0.005452839092191724,0.0204184017118416,-0.014965562619649875,-0.6107297598750627,-0.595764197255413,-0.014965562619649764,3.7655826770818184,2.7891473454938693,6.387603261684172e-10,2.789147345493871
+2025-06-20,0.05385929442224178,0.022407464592959614,0.031451829829282164,-0.46632151452787346,-0.49777334435715553,0.031451829829282074,3.9683943031580613,2.8768711331731365,3.4089264344924247e-10,2.8768711331731383
+2025-07-18,-0.08478477447280788,-0.030188946341294435,-0.05459582813151345,-0.5592659704023771,-0.5046701422708636,-0.054595828131513535,3.6319348871456296,2.7198059712299036,1.5024298840757033e-10,2.719805971229905
+2025-08-15,0.07828133560968623,0.018107785517325253,0.06017355009236097,-0.3733418582958729,-0.43351540838823377,0.06017355009236086,3.9162476009588048,2.883466352081209,9.415099191956272e-11,2.88346635208121

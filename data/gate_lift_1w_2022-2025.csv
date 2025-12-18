@@ -1,0 +1,2 @@
+gate_feature,base_momentum,target_col,median_base_ic,median_gated_ic,lift,n_weeks_used
+volume_zscore_20d,ret_8w,target_forward_1w_excess,0.006606679560924567,0.017039355992844365,0.010432676431919797,193

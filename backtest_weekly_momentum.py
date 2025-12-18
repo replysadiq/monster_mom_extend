@@ -27,6 +27,8 @@ from build_weekly_dataset import (
     compute_stock_features,
     load_data,
 )
+from price_scale import apply_price_scale
+from data_quality_gate import add_close_quality_flags, quarantine_report
 
 
 RESULTS_DIR = Path("results")
@@ -36,6 +38,7 @@ RESULTS_DIR = Path("results")
 class Config:
     start: Optional[pd.Timestamp]
     end: Optional[pd.Timestamp]
+    ohlcv_path: Path
     initial_capital: float
     top_n: int
     min_adv: float
@@ -67,6 +70,15 @@ class Config:
 def load_ohlcv(path: Path) -> pd.DataFrame:
     df = pd.read_parquet(path)
     df["date"] = pd.to_datetime(df["date"])
+    if df["date"].dt.tz is not None:
+        df["date"] = df["date"].dt.tz_localize(None)
+    scale_path = Path("data/scale_factors_by_symbol.csv")
+    scale_override = None
+    if scale_path.exists():
+        scale_df = pd.read_csv(scale_path)
+        if {"symbol", "scale_factor"}.issubset(scale_df.columns):
+            scale_override = scale_df.set_index("symbol")["scale_factor"]
+    df, _ = apply_price_scale(df, symbol_col="symbol", scale_override=scale_override)
     df = df.sort_values(["symbol", "date"]).set_index(["symbol", "date"])
     return df
 
@@ -273,20 +285,34 @@ def select_portfolio(
     return top[["score"]]
 
 
-def get_execution_prices(
+def get_exit_prices(
     ohlcv: pd.DataFrame, symbols: List[str], rebalance_date: pd.Timestamp, execution: str
-) -> Dict[str, float]:
-    prices: Dict[str, float] = {}
+) -> Dict[str, Tuple[pd.Timestamp, float]]:
+    """Return exit price and date for symbols as of rebalance_date."""
+    prices: Dict[str, Tuple[pd.Timestamp, float]] = {}
     for sym in symbols:
-        data = ohlcv.xs(sym, level=0)
+        data = ohlcv.xs(sym, level=0).sort_index()
         if execution == "friday_close":
-            row = data[data.index == rebalance_date]
+            row = data[data.index <= rebalance_date].tail(1)
             if not row.empty:
-                prices[sym] = float(row["close"].iloc[0])
+                prices[sym] = (row.index[0], float(row["close"].iloc[0]))
         else:
             row = data[data.index > rebalance_date].head(1)
             if not row.empty:
-                prices[sym] = float(row["open"].iloc[0])
+                prices[sym] = (row.index[0], float(row["open"].iloc[0]))
+    return prices
+
+
+def get_entry_prices(
+    ohlcv: pd.DataFrame, symbols: List[str], rebalance_date: pd.Timestamp, execution: str
+) -> Dict[str, Tuple[pd.Timestamp, float]]:
+    """Return entry price and date after rebalance_date."""
+    prices: Dict[str, Tuple[pd.Timestamp, float]] = {}
+    for sym in symbols:
+        data = ohlcv.xs(sym, level=0).sort_index()
+        row = data[data.index > rebalance_date].head(1)
+        if not row.empty:
+            prices[sym] = (row.index[0], float(row["open"].iloc[0]))
     return prices
 
 
@@ -317,119 +343,178 @@ def simulate(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     rebalance_dates = compute_rebalance_dates(features, cfg.start, cfg.end)
     portfolio_value = cfg.initial_capital
-    cash = cfg.initial_capital
-    holdings: Dict[str, float] = {}
-
+    out_base = Path(cfg.out_dir) if cfg.out_dir else RESULTS_DIR
+    out_base.mkdir(parents=True, exist_ok=True)
     equity_records = []
-    trade_records = []
-    holding_records = []
+    trade_records: List[Dict[str, object]] = []
+    holding_records: List[Dict[str, object]] = []
     summary_records: List[Dict[str, object]] = []
 
-    for reb_date in rebalance_dates:
+    prev_weights: Dict[str, float] = {}
+    prev_entry: Dict[str, Tuple[pd.Timestamp, float]] = {}
+    prev_cash_weight = 1.0
+    debug_ret: List[Dict[str, object]] = []
+    debug_rebalance_rows: List[Dict[str, object]] = []
+
+    for i, reb_date in enumerate(rebalance_dates):
+        coverage = np.nan
         week_slice = features.xs(reb_date, level="week_date")
-        selection = select_portfolio(reb_date, week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds, summary_records)
+        # Defensive drop of any target/forward columns to avoid leakage
+        leak_cols = [c for c in week_slice.columns if c.startswith("target_") or c.startswith("fwd_")]
+        if leak_cols:
+            week_slice = week_slice.drop(columns=leak_cols, errors="ignore")
+
+        # Realize returns from previous period
+        if i > 0:
+            if prev_weights:
+                exit_prices = get_exit_prices(ohlcv, list(prev_weights.keys()), reb_date, cfg.execution)
+                coverage = sum(sym in exit_prices for sym in prev_weights) / max(len(prev_weights), 1)
+                if coverage < 0.95:
+                    raise RuntimeError(f"Low exit price coverage at {reb_date}: {coverage:.2%}")
+                realized_ret = 0.0
+                cash_w = float(prev_cash_weight)
+                invested_w = float(sum(prev_weights.values()))
+                r_list = []
+
+                for sym, w in prev_weights.items():
+                    if w < 0:
+                        raise ValueError(f"Negative weight for {sym}")
+                    entry = prev_entry.get(sym)
+                    exitp = exit_prices.get(sym)
+                    # if no entry, treat as cash; if no exit, hard fail (data issue)
+                    if entry is None or entry[1] <= 0 or not np.isfinite(entry[1]):
+                        cash_w += w
+                        invested_w -= w
+                        continue
+                    if exitp is None or exitp[1] <= 0 or not np.isfinite(exitp[1]):
+                        raise RuntimeError(f"Missing/invalid EXIT for {sym} at {reb_date} (execution={cfg.execution})")
+                    r = exitp[1] / entry[1] - 1.0
+                    realized_ret += w * r
+                    r_list.append(r)
+                    debug_rebalance_rows.append(
+                        {
+                            "rebalance_date": reb_date,
+                            "symbol": sym,
+                            "entry_date": entry[0],
+                            "entry_price": entry[1],
+                            "exit_date": exitp[0],
+                            "exit_price": exitp[1],
+                            "return": r,
+                        }
+                    )
+
+                total_w = cash_w + invested_w
+                if not np.isclose(total_w, 1.0, atol=1e-6):
+                    raise ValueError(f"Weight sum != 1 at {reb_date}: cash={cash_w}, invested={invested_w}, total={total_w}")
+                if not np.isfinite(realized_ret):
+                    raise RuntimeError(f"Non-finite realized_ret at {reb_date}")
+                if portfolio_value * (1.0 + realized_ret) <= 0:
+                    raise RuntimeError(f"Portfolio value would collapse at {reb_date} with realized_ret {realized_ret}")
+                portfolio_value *= (1.0 + realized_ret)
+                equity_records.append({"date": reb_date, "portfolio_value": portfolio_value, "return": realized_ret})
+                if r_list:
+                    debug_ret.append(
+                        {
+                            "date": reb_date,
+                            "min_r": float(np.min(r_list)),
+                            "max_r": float(np.max(r_list)),
+                            "neg_count": int(sum(np.array(r_list) < 0)),
+                            "count": len(r_list),
+                        }
+                    )
+            else:
+                equity_records.append({"date": reb_date, "portfolio_value": portfolio_value, "return": 0.0})
+        elif i == 0:
+            equity_records.append({"date": reb_date, "portfolio_value": portfolio_value, "return": 0.0})
+
+        # New selection for next period
+        selection = select_portfolio(
+            reb_date, week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds, summary_records
+        )
         if selection.empty:
-            # record equity unchanged
-            equity_records.append(
-                {
-                    "date": reb_date,
-                    "portfolio_value": portfolio_value,
-                    "return": 0.0,
-                }
-            )
+            prev_weights = {}
+            prev_entry = {}
+            prev_cash_weight = 1.0
+            holding_records.append({"rebalance_date": reb_date, "symbol": "CASH", "weight": 1.0})
+            # annotate coverage for summary (no exits on first period)
+            if summary_records:
+                summary_records[-1]["exit_coverage"] = np.nan
+                summary_records[-1]["entry_coverage"] = 1.0
             continue
 
+        old_weights = prev_weights
         sel_df = week_slice.loc[selection.index]
-        weights = sizing_weights(sel_df, cfg)
-        exec_prices = get_execution_prices(ohlcv, list(selection.index), reb_date, cfg.execution)
+        selected_count = len(sel_df)
+        cash_w = max(0.0, 1 - 0.1 * selected_count)
+        sym_weight = (1 - cash_w) / selected_count if selected_count > 0 else 0.0
+        weights = {sym: sym_weight for sym in sel_df.index}
 
-        # Value existing holdings at exec prices
-        mark_value = 0.0
-        for sym, qty in holdings.items():
-            if (sym, reb_date) in ohlcv.index:
-                price = float(ohlcv.loc[(sym, reb_date), "close"])
-            else:
-                # fallback to last available before rebalance
-                data = ohlcv.xs(sym, level=0)
-                prev = data[data.index <= reb_date].tail(1)
-                if prev.empty:
-                    continue
-                price = float(prev["close"].iloc[0])
-            mark_value += qty * price
-        portfolio_value = cash + mark_value
-
-        # Target positions
-        desired = {}
+        entry_symbols = list(set(weights.keys()) | set(old_weights.keys()))
+        entry_prices = get_entry_prices(ohlcv, entry_symbols, reb_date, cfg.execution)
+        missing_entry = [
+            sym
+            for sym in weights
+            if entry_prices.get(sym) is None
+            or entry_prices.get(sym, (None, np.nan))[1] <= 0
+            or not np.isfinite(entry_prices.get(sym, (None, np.nan))[1])
+        ]
+        if missing_entry:
+            print(
+                f"[WARN] {reb_date} missing entry prices for {len(missing_entry)}/{len(weights)} symbols; reallocating to cash."
+            )
+        valid_weights: Dict[str, float] = {}
+        adj_cash = cash_w
         for sym, w in weights.items():
-            if sym not in exec_prices:
+            price = entry_prices.get(sym)
+            if price is None or price[1] <= 0 or not np.isfinite(price[1]):
+                adj_cash += w
                 continue
-            price = exec_prices[sym]
-            notional = portfolio_value * w
-            qty = notional / price
-            desired[sym] = qty
-
-        # Trades
-        new_holdings: Dict[str, float] = {}
-        total_costs = 0.0
-        for sym, tgt_qty in desired.items():
-            curr_qty = holdings.get(sym, 0.0)
-            trade_qty = tgt_qty - curr_qty
-            if sym not in exec_prices:
+            valid_weights[sym] = w
+        invested = sum(valid_weights.values())
+        adj_cash = max(0.0, adj_cash)
+        if invested > 0:
+            scale = (1.0 - adj_cash) / invested
+            valid_weights = {k: v * scale for k, v in valid_weights.items()}
+        # log trades as weight deltas against previous holdings
+        for sym in set(old_weights.keys()).union(valid_weights.keys()):
+            old_w = old_weights.get(sym, 0.0)
+            new_w = valid_weights.get(sym, 0.0)
+            delta_w = new_w - old_w
+            if abs(delta_w) < 1e-6:
                 continue
-            price = exec_prices[sym]
-            notional = abs(trade_qty) * price
-            if notional == 0:
-                new_holdings[sym] = tgt_qty
+            price = entry_prices.get(sym, np.nan)
+            if price is None or not np.isfinite(price[1]) or price[1] <= 0:
                 continue
-            comm = cfg.commission_bps / 1e4 * notional
-            slip = cfg.slippage_bps / 1e4 * notional
-            impact = 0.0
-            if cfg.impact_k is not None and cfg.impact_k > 0:
-                adv = week_slice.loc[sym, "adv_60d"]
-                if adv > 0:
-                    impact = (cfg.impact_k / np.sqrt(adv)) * notional / 1e4
-            cost = comm + slip + impact
-            total_costs += cost
-            cash -= trade_qty * price + cost
-            side = "buy" if trade_qty > 0 else "sell"
+            notional = abs(delta_w) * portfolio_value
+            side = "buy" if delta_w > 0 else "sell"
             trade_records.append(
                 {
                     "rebalance_date": reb_date,
                     "symbol": sym,
                     "side": side,
-                    "qty": trade_qty,
-                    "price": price,
-                    "notional": trade_qty * price,
-                    "costs": cost,
+                    "delta_weight": delta_w,
+                    "price": price[1],
+                    "notional": notional,
                 }
             )
-            new_holdings[sym] = tgt_qty
+        # Store fresh entry prices for this rebalance only
+        prev_weights = valid_weights
+        prev_entry = {sym: entry_prices[sym] for sym in valid_weights}
+        prev_cash_weight = adj_cash
 
-        holdings = new_holdings
+        holding_records.append({"rebalance_date": reb_date, "symbol": "CASH", "weight": prev_cash_weight})
+        for sym, w in prev_weights.items():
+            holding_records.append({"rebalance_date": reb_date, "symbol": sym, "weight": w})
 
-        # Update mark-to-market after trades
-        mtm = 0.0
-        for sym, qty in holdings.items():
-            price = exec_prices.get(sym)
-            if price is None:
-                continue
-            mtm += qty * price
-        portfolio_value = cash + mtm
-
-        equity_records.append(
-            {
-                "date": reb_date,
-                "portfolio_value": portfolio_value,
-                "return": 0.0,  # compute later
-            }
-        )
-        for sym, w in weights.items():
-            holding_records.append(
-                {"rebalance_date": reb_date, "symbol": sym, "weight": w}
-            )
+        entry_cov = 1.0 if not weights else len(valid_weights) / len(weights)
+        if summary_records:
+            summary_records[-1]["exit_coverage"] = coverage if i > 0 else np.nan
+            summary_records[-1]["entry_coverage"] = entry_cov
 
     equity_df = pd.DataFrame(equity_records).sort_values("date").reset_index(drop=True)
-    equity_df["return"] = equity_df["portfolio_value"].pct_change().fillna(0.0)
+    if equity_df["date"].duplicated().any():
+        dups = equity_df[equity_df["date"].duplicated(keep=False)]["date"].unique()
+        raise RuntimeError(f"Duplicate dates in equity curve: {dups[:5]}")
     equity_df["cum_return"] = (1 + equity_df["return"]).cumprod()
     peak = equity_df["cum_return"].cummax()
     equity_df["drawdown"] = equity_df["cum_return"] / peak - 1
@@ -437,10 +522,24 @@ def simulate(
     trades_df = pd.DataFrame(trade_records)
     holdings_df = pd.DataFrame(holding_records)
     summary_df = pd.DataFrame(summary_records)
+    if debug_ret:
+        pd.DataFrame(debug_ret).to_csv(out_base / "debug_symbol_returns.csv", index=False)
+    if debug_rebalance_rows:
+        pd.DataFrame(debug_rebalance_rows).to_csv(out_base / "debug_rebalance_returns.csv", index=False)
+        dbg = pd.DataFrame(debug_rebalance_rows)
+        min_by_reb = dbg.groupby("rebalance_date")["return"].min()
+        if (min_by_reb >= 0).all():
+            raise RuntimeError("All per-position returns are non-negative across the window; price series likely monotonic.")
+    if (equity_df["portfolio_value"] <= 0).any():
+        raise ValueError("portfolio_value dropped to <= 0")
+    if (equity_df["return"] <= -1).any():
+        raise ValueError("Return <= -1 encountered")
+    if trades_df.empty:
+        print("[WARN] trades empty; turnover will be zero.")
     return equity_df, trades_df, holdings_df, summary_df
 
 
-def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame, cfg: Config) -> Dict[str, float]:
+def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame, holdings: pd.DataFrame, cfg: Config) -> Dict[str, float]:
     rets = pd.Series(equity["return"]).replace([np.inf, -np.inf], np.nan).dropna()
     rets = rets.clip(lower=-0.999999)
     weeks_per_year = 52
@@ -450,9 +549,29 @@ def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame, cfg: Config) -> 
     sharpe = ann_ret / ann_vol if ann_vol > 0 else np.nan
     max_dd = equity["drawdown"].min()
     calmar = -ann_ret / max_dd if max_dd < 0 else np.nan
-    turnover = trades["notional"].abs().sum() / (cfg.initial_capital * max(len(equity), 1))
+    if trades is None or trades.empty:
+        turnover = 0.0
+        print("[WARN] trades empty; turnover set to 0.0")
+    else:
+        tr = trades.copy()
+        if "notional" not in tr.columns:
+            if {"qty", "price"}.issubset(tr.columns):
+                tr["notional"] = (tr["qty"] * tr["price"]).abs()
+            elif "trade_value" in tr.columns:
+                tr["notional"] = tr["trade_value"].abs()
+            else:
+                tr["notional"] = 0.0
+        turnover = tr["notional"].abs().sum() / (cfg.initial_capital * max(len(equity), 1))
     win_rate = (rets > 0).mean()
-    exposure = 1.0  # fully invested by design
+    exposure = np.nan
+    if holdings is not None and not holdings.empty:
+        cash_weights = (
+            holdings[holdings["symbol"] == "CASH"]
+            .groupby("rebalance_date")["weight"]
+            .sum()
+        )
+        exposure_series = 1 - cash_weights.reindex(equity["date"]).fillna(1.0)
+        exposure = exposure_series.mean()
     return {
         "CAGR": ann_ret,
         "annual_vol": ann_vol,
@@ -480,6 +599,7 @@ def parse_args() -> Config:
     ap.add_argument("--slippage_bps", type=float, default=10.0)
     ap.add_argument("--impact_k", type=float, default=0.0, help="Set >0 to enable impact_k/sqrt(adv_60d)")
     ap.add_argument("--execution", type=str, default="next_open", choices=["next_open", "friday_close"])
+    ap.add_argument("--ohlcv", type=Path, default=Path("data/ohlcv.parquet"))
     ap.add_argument("--features", type=Path, default=None, help="Path to precomputed weekly features parquet.")
     ap.add_argument("--frozen_features", type=Path, required=True, help="Path to frozen features txt.")
     ap.add_argument("--out_prefix", type=str, default="backtest")
@@ -502,6 +622,7 @@ def parse_args() -> Config:
     return Config(
         start=start,
         end=end,
+        ohlcv_path=args.ohlcv,
         initial_capital=args.initial_capital,
         top_n=args.top_n,
         min_adv=args.min_adv,
@@ -533,8 +654,24 @@ def parse_args() -> Config:
 
 def main() -> None:
     cfg = parse_args()
-    features = get_weekly_features(cfg)
-    ohlcv = load_ohlcv(Path("data/ohlcv.parquet"))
+    features_raw = get_weekly_features(cfg)
+    # Scale invariants on weekly close to catch regressions
+    med_weekly = features_raw.groupby("symbol")["close"].median()
+    bad_scale = med_weekly[(med_weekly > 5e5) | (med_weekly < 1.0)]
+    if not bad_scale.empty:
+        raise RuntimeError(
+            f"Weekly close scale invalid for {len(bad_scale)} symbols. Example:\n{bad_scale.head()}"
+        )
+    flagged = add_close_quality_flags(features_raw.reset_index())
+    features = flagged[~flagged["is_bad_close"]].set_index(["symbol", "week_date"]).sort_index()
+    out_base = Path(cfg.out_dir) if cfg.out_dir else RESULTS_DIR
+    out_base.mkdir(parents=True, exist_ok=True)
+    qr = quarantine_report(flagged)
+    qr.to_csv(out_base / "quarantine_bad_close_weeks.csv", index=False)
+    if cfg.start and cfg.end:
+        qr_window = qr[(pd.to_datetime(qr["week_date"]) >= cfg.start) & (pd.to_datetime(qr["week_date"]) <= cfg.end)]
+        qr_window.to_csv(out_base / "quarantine_bad_close_weeks_window.csv", index=False)
+    ohlcv = load_ohlcv(cfg.ohlcv_path)
     if cfg.score_horizon == "1w":
         frozen_path = cfg.frozen_1w or cfg.frozen_features_path
         default_gate_only = ["volume_zscore_20d"]
@@ -566,7 +703,7 @@ def main() -> None:
     directions = load_manifest(cfg.manifest)
 
     equity, trades, holdings, summary_df = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
-    metrics = compute_metrics(equity, trades, cfg)
+    metrics = compute_metrics(equity, trades, holdings, cfg)
 
     out_base = Path(cfg.out_dir) if cfg.out_dir else RESULTS_DIR
     out_base.mkdir(parents=True, exist_ok=True)

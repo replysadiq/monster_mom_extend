@@ -1,0 +1,6 @@
+turnover_ratio_20d
+ret_3m
+ret_8w
+supertrend_state_10_3
+adx_14
+hist_vol_20d
