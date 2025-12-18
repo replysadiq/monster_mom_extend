@@ -340,6 +340,8 @@ def build_weekly_panel(df: pd.DataFrame, index: pd.DataFrame) -> pd.DataFrame:
     weekly_panel = weekly_panel[feature_cols]
     # Only drop rows missing close; keep others for diagnostics
     weekly_panel = weekly_panel.dropna(subset=["close"])
+    weekly_panel.index = pd.MultiIndex.from_frame(weekly_panel.index.to_frame(index=False), names=["symbol", "week_date"])
+    weekly_panel = weekly_panel.sort_index()
     return weekly_panel
 
 
@@ -347,6 +349,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build weekly feature panel.")
     parser.add_argument("--start", type=str, default=None, help="Start date (YYYY-MM-DD), inclusive.")
     parser.add_argument("--end", type=str, default=None, help="End date (YYYY-MM-DD), inclusive.")
+    parser.add_argument(
+        "--merge-existing",
+        action="store_true",
+        help="If output exists, overwrite only the weeks present in the newly computed range (delta-safe).",
+    )
     parser.add_argument(
         "--out",
         type=Path,
@@ -372,8 +379,23 @@ def main() -> None:
     daily_feat = compute_stock_features(stocks, index_feat)
     weekly = build_weekly_panel(daily_feat, index_feat)
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    weekly.to_parquet(args.out)
-    print(f"Weekly feature panel saved to {args.out} with shape {weekly.shape}")
+    if args.merge_existing and args.out.exists():
+        existing = pd.read_parquet(args.out)
+        if not isinstance(existing.index, pd.MultiIndex):
+            existing = existing.set_index(["symbol", "week_date"])
+        existing.index = pd.MultiIndex.from_tuples(existing.index, names=["symbol", "week_date"])
+        weeks_new = set(weekly.index.get_level_values("week_date").unique())
+        existing = existing.loc[~existing.index.get_level_values("week_date").isin(weeks_new)]
+        combined = pd.concat([existing, weekly])
+        combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+        combined.to_parquet(args.out)
+        print(
+            f"Weekly feature panel merged into {args.out} with shape {combined.shape} "
+            f"(replaced {len(weeks_new)} weeks)"
+        )
+    else:
+        weekly.to_parquet(args.out)
+        print(f"Weekly feature panel saved to {args.out} with shape {weekly.shape}")
 
 
 if __name__ == "__main__":
