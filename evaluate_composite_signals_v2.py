@@ -23,6 +23,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--out-dir", type=Path, default=Path("results/composite_eval_yahoo_3y"))
     ap.add_argument("--rolling-window", type=int, default=26)
     ap.add_argument("--nonoverlap-step", type=int, default=4)
+    ap.add_argument("--mr-selected", type=Path, default=None, help="JSON list from feature selection (mr_1w)")
+    ap.add_argument("--trend-selected", type=Path, default=None, help="JSON list from feature selection (trend_4w)")
     return ap.parse_args()
 
 
@@ -46,6 +48,28 @@ def _write_index_weekly_close(idx_close: pd.Series, out_dir: Path) -> None:
     if df.columns.tolist() != ["week_date", "index_close"]:
         df.columns = ["week_date", "index_close"]
     df.to_csv(out_dir / "index_weekly_close.csv", index=False)
+
+
+def load_selected_features(path: Optional[Path]) -> Dict[str, int]:
+    """
+    JSON format: [{"feature": "ret_1w", "sign": -1}, ...]
+    Returns dict: {feature: sign}
+    """
+    if path is None:
+        return {}
+    data = json.loads(path.read_text())
+    out: Dict[str, int] = {}
+    for row in data:
+        f = row["feature"]
+        s = int(row.get("sign", 1))
+        out[f] = 1 if s >= 0 else -1
+    return out
+
+
+def assert_selected_present(feats: pd.DataFrame, selected: Dict[str, int], label: str) -> None:
+    missing = [f for f in selected.keys() if f not in feats.columns]
+    if missing:
+        raise RuntimeError(f"{label} selected features missing from features parquet: {missing}")
 
 
 def load_ohlcv(path: Path) -> pd.DataFrame:
@@ -378,9 +402,13 @@ def main() -> None:
     # persist the weekly index series actually used
     _write_index_weekly_close(idx_close, out_dir)
 
-    # composites (same as your current config)
-    mr_feats = {"ret_1w": -1, "ret_2w": -1, "pct_above_20d_sma": -1}
-    trend_feats = {"sma_50d": -1, "sma_200d": -1, "atr_pct_14": 1}
+    # composites (use selected lists if provided, else defaults)
+    mr_feats = load_selected_features(args.mr_selected) or {"ret_1w": -1, "ret_2w": -1, "pct_above_20d_sma": -1}
+    trend_feats = load_selected_features(args.trend_selected) or {"sma_50d": -1, "sma_200d": -1, "atr_pct_14": 1}
+    if args.mr_selected:
+        assert_selected_present(feats, mr_feats, "MR(1W)")
+    if args.trend_selected:
+        assert_selected_present(feats, trend_feats, "Trend(4W)")
     score_mr, score_trend = build_composites(feats, mr_feats, trend_feats, min_feat=2)
 
     ts_mr = ic_timeseries(score_mr, target1)

@@ -1,0 +1,30 @@
+[
+  {
+    "feature": "adv_20d",
+    "sign": -1
+  },
+  {
+    "feature": "sma_50d",
+    "sign": -1
+  },
+  {
+    "feature": "beta_60d",
+    "sign": -1
+  },
+  {
+    "feature": "ret_1d",
+    "sign": -1
+  },
+  {
+    "feature": "donchian_pos_20",
+    "sign": -1
+  },
+  {
+    "feature": "hist_vol_60d",
+    "sign": 1
+  },
+  {
+    "feature": "ret_6m",
+    "sign": 1
+  }
+]
