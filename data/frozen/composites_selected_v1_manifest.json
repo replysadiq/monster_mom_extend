@@ -1,0 +1,86 @@
+{
+  "outputs": {
+    "composites_parquet": "data/frozen/composites_selected_v1.parquet"
+  },
+  "inputs": {
+    "features": "data/weekly_features_yahoo.parquet",
+    "mr_selected": "results/feature_select_v1/selected_features_mr_1w.json",
+    "trend_selected": "results/feature_select_v1/selected_features_trend_4w.json"
+  },
+  "sha256": {
+    "features": "b8d4b4682d90706e3eaf51c49663e1db7de6b7af49028ba19419ebf7ee7bc475",
+    "mr_selected": "4132f689a4b4d7ff77cf28433794fc166271f9d58c926dd22d84d60ec1fa7220",
+    "trend_selected": "31063fb98bbae1a0068d0891cf18be6995c42b32ca6d221b49587be0eeab3e2e"
+  },
+  "params": {
+    "min_feat": 2,
+    "rank_method": "pct=True, method=average",
+    "zscore": "cross-sectional per week_date, ddof=0"
+  },
+  "selected": {
+    "mr_1w": [
+      {
+        "feature": "ret_1w",
+        "sign": -1
+      },
+      {
+        "feature": "ret_1d",
+        "sign": -1
+      },
+      {
+        "feature": "ret_2w",
+        "sign": -1
+      },
+      {
+        "feature": "rsi_14",
+        "sign": -1
+      },
+      {
+        "feature": "adv_20d",
+        "sign": -1
+      },
+      {
+        "feature": "ema_slope_20d",
+        "sign": -1
+      },
+      {
+        "feature": "turnover_ratio_20d",
+        "sign": 1
+      }
+    ],
+    "trend_4w": [
+      {
+        "feature": "adv_20d",
+        "sign": -1
+      },
+      {
+        "feature": "sma_50d",
+        "sign": -1
+      },
+      {
+        "feature": "beta_60d",
+        "sign": -1
+      },
+      {
+        "feature": "ret_1d",
+        "sign": -1
+      },
+      {
+        "feature": "donchian_pos_20",
+        "sign": -1
+      },
+      {
+        "feature": "hist_vol_60d",
+        "sign": 1
+      },
+      {
+        "feature": "ret_6m",
+        "sign": 1
+      }
+    ]
+  },
+  "shape": {
+    "rows": 69902,
+    "cols": 4
+  }
+}

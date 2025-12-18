@@ -2,5 +2,6 @@ __pycache__/
 .DS_Store
 .env
 *.parquet
-data/
-results/
+data/frozen/*.parquet
+results/**/*
+output/

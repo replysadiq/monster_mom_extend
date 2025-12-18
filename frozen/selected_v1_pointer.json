@@ -1,0 +1,5 @@
+{
+  "composites_parquet": "data/frozen/composites_selected_v1.parquet",
+  "manifest": "data/frozen/composites_selected_v1_manifest.json",
+  "feature_selection": "results/feature_select_v1/selection_manifest.json"
+}
