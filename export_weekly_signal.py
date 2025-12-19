@@ -16,12 +16,13 @@ def parse_args() -> argparse.Namespace:
         help="Frozen composites parquet (MultiIndex symbol, week_date).",
     )
     ap.add_argument(
-        "--signal",
+        "--selection-mode",
         type=str,
-        default="rank_trend_4w",
-        choices=["rank_trend_4w", "rank_mr_1w", "score_trend_4w", "score_mr_1w"],
-        help="Column to rank on (higher is better).",
+        default="trend_confirmed_mr",
+        choices=["trend_confirmed_mr"],
+        help="Two-stage selection: shortlist by trend_4w then rank by mr_1w.",
     )
+    ap.add_argument("--trend-shortlist-size", type=int, default=30, help="Top-M shortlist by trend_4w before MR ranking.")
     ap.add_argument("--topn", type=int, default=10, help="Number of symbols to export.")
     ap.add_argument(
         "--out",
@@ -45,20 +46,26 @@ def _as_multiindex(df: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     args = parse_args()
     comps = _as_multiindex(pd.read_parquet(args.composites))
-    if args.signal not in comps.columns:
-        raise RuntimeError(f"Signal '{args.signal}' not found. Available: {comps.columns.tolist()}")
-
     latest_week = comps.index.get_level_values("week_date").max()
     latest = comps.xs(latest_week, level="week_date").reset_index()
-    latest = latest.dropna(subset=[args.signal])
-    latest["rank"] = latest[args.signal]
-    latest = latest.sort_values(args.signal, ascending=False).head(args.topn)
-    latest.insert(0, "week_date", pd.to_datetime(latest_week).date())
-    latest["signal"] = args.signal
+    latest = latest.dropna(subset=["score_trend_4w", "score_mr_1w"], how="all")
+
+    # Two-stage: shortlist by trend_4w then rank by mr_1w
+    if not {"score_trend_4w", "score_mr_1w"}.issubset(latest.columns):
+        raise RuntimeError("Composites must contain score_trend_4w and score_mr_1w for export.")
+
+    trend_ranked = latest.sort_values("score_trend_4w", ascending=False)
+    shortlist = trend_ranked.head(args.trend_shortlist_size)
+    shortlist = shortlist.sort_values("score_mr_1w", ascending=False)
+    shortlist["rank"] = shortlist["score_mr_1w"]
+
+    shortlist = shortlist.dropna(subset=["rank"]).head(args.topn)
+    shortlist.insert(0, "week_date", pd.to_datetime(latest_week).date())
+    shortlist["signal"] = "trend_confirmed_mr"
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    latest[["week_date", "symbol", "rank", "signal"]].to_csv(args.out, index=False)
-    print(f"Wrote Top-{args.topn} for {latest_week.date()} to {args.out}")
+    shortlist[["week_date", "symbol", "rank", "signal"]].to_csv(args.out, index=False)
+    print(f"Wrote Top-{args.topn} (trend-confirmed MR) for {latest_week.date()} to {args.out}")
 
 
 if __name__ == "__main__":

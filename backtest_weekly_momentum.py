@@ -65,6 +65,11 @@ class Config:
     veto_thresholds_str: Optional[str] = None
     quality_thresholds_str: Optional[str] = None
     out_dir: Optional[str] = None
+    composite_mode: str = "blend"  # trend4w | mr1w | blend
+    w1: float = 0.6
+    w4: float = 0.4
+    selection_mode: str = "trend_confirmed_mr"  # trend_confirmed_mr (default)
+    trend_shortlist_size: int = 30
 
 
 def load_ohlcv(path: Path) -> pd.DataFrame:
@@ -152,13 +157,17 @@ def select_portfolio(
     week_date: pd.Timestamp,
     week_df: pd.DataFrame,
     cfg: Config,
-    frozen_features: List[str],
+    frozen_features_mr: List[str],
+    frozen_features_trend: List[str],
     directions: Dict[str, int],
     gate_only: List[str],
     risk_veto: List[str],
     gate_thresholds: Dict[str, float],
     summary_records: List[Dict[str, object]],
 ) -> pd.DataFrame:
+    # Order enforced: liquidity -> gates -> trend shortlist -> MR rank -> quality kill-switch
+    if cfg.trend_shortlist_size < cfg.top_n:
+        raise RuntimeError("trend_shortlist_size must be >= top_n")
     df = week_df.copy()
     df = df[df["adv_60d"] >= cfg.min_adv]
 
@@ -172,6 +181,11 @@ def select_portfolio(
                 "score_dispersion": np.nan,
                 "top_minus_median": np.nan,
                 "quality_ok": False,
+                "score_corr": np.nan,
+                "overlap_topn": np.nan,
+                "score_corr": np.nan,
+                "overlap_topn": np.nan,
+                "trend_shortlist_size": shortlist_size if "shortlist_size" in locals() else np.nan,
             }
         )
         return pd.DataFrame(columns=["symbol", "score"])
@@ -199,37 +213,69 @@ def select_portfolio(
                 "score_dispersion": np.nan,
                 "top_minus_median": np.nan,
                 "quality_ok": False,
+                "score_corr": np.nan,
+                "overlap_topn": np.nan,
+                "score_corr": corr_scores,
+                "overlap_topn": overlap_pct,
+                "trend_shortlist_size": shortlist_size,
             }
         )
         return pd.DataFrame(columns=["symbol", "score"])
 
-    # Scoring features
-    scoring_features = [f for f in frozen_features if f not in gate_only and f not in risk_veto]
-    scores = []
-    for feat in scoring_features:
-        if feat not in df.columns:
-            continue
-        ranks = df[feat].rank(pct=True)
-        if directions.get(feat, 1) == -1:
-            ranks = 1 - ranks
-        scores.append(ranks)
-    if not scores:
-        summary_records.append(
-            {
-                "week_date": pd.Timestamp(week_date),
-                "eligible_count": len(df),
-                "selected_count": 0,
-                "cash_weight": 1.0,
-                "score_dispersion": np.nan,
-                "top_minus_median": np.nan,
-                "quality_ok": False,
-            }
-        )
-        return pd.DataFrame(columns=["symbol", "score"])
-    score_df = pd.concat(scores, axis=1)
-    score_df["score"] = score_df.mean(axis=1)
-    df = df.loc[score_df.index]
-    df["score"] = score_df["score"]
+    def compute_score(features: List[str]) -> pd.Series:
+        if not features:
+            return pd.Series(dtype=float)
+        missing = [f for f in features if f not in df.columns]
+        if missing:
+            raise RuntimeError(f"Scoring features missing in weekly data for {week_date}: {missing}")
+        usable = [f for f in features if f not in gate_only and f not in risk_veto]
+        if not usable:
+            return pd.Series(dtype=float)
+        cols = []
+        for feat in usable:
+            ranks = df[feat].rank(pct=True)
+            if directions.get(feat, 1) == -1:
+                ranks = 1 - ranks
+            cols.append(ranks.rename(feat))
+        if not cols:
+            return pd.Series(dtype=float)
+        z = pd.concat(cols, axis=1)
+        return z.mean(axis=1)
+
+    score_mr = compute_score(frozen_features_mr)
+    score_trend = compute_score(frozen_features_trend)
+
+    if score_mr.empty:
+        raise RuntimeError("MR(1W) score is empty; check frozen 1W features.")
+    if score_trend.empty:
+        raise RuntimeError("Trend(4W) score is empty; check frozen 4W features.")
+
+    # Align indices for diagnostics
+    align_idx = score_mr.index.intersection(score_trend.index)
+    score_mr = score_mr.reindex(align_idx)
+    score_trend = score_trend.reindex(align_idx)
+    df = df.loc[align_idx]
+    df["score_mr_1w"] = score_mr
+    df["score_trend_4w"] = score_trend
+
+    # Two-stage: shortlist by trend, then rank by MR within shortlist
+    shortlist_size = cfg.trend_shortlist_size
+    trend_ranked = df.sort_values("score_trend_4w", ascending=False)
+    shortlist = trend_ranked.head(shortlist_size)
+    df = shortlist.sort_values("score_mr_1w", ascending=False)
+    df["score"] = df["score_mr_1w"]
+
+    # Diagnostics
+    corr_scores = np.nan
+    overlap_pct = np.nan
+    merged = df[["score_mr_1w", "score_trend_4w"]].dropna()
+    if len(merged) >= 20:
+        corr_scores = merged.corr(method="spearman").iloc[0, 1]
+    top_tr_syms = trend_ranked.head(cfg.top_n).index if not trend_ranked.empty else []
+    top_mr_syms = df.head(cfg.top_n).index if not df.empty else []
+    if len(top_mr_syms) and len(top_tr_syms):
+        overlap = len(set(top_mr_syms).intersection(set(top_tr_syms)))
+        overlap_pct = overlap / cfg.top_n
 
     score_dispersion = df["score"].std()
     top_scores = df["score"].nlargest(min(len(df), cfg.top_n))
@@ -251,17 +297,23 @@ def select_portfolio(
                 "eligible_count": len(df),
                 "selected_count": 0,
                 "cash_weight": 1.0,
-                "score_dispersion": score_dispersion,
-                "top_minus_median": top_minus_median,
-                "quality_ok": False,
-            }
-        )
-        print(
-            f"{pd.Timestamp(week_date)} "
-            f"universe={len(week_df)}, eligible={len(df)}, selected=0, cash=1.0, quality_ok=False, "
-            f"score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}"
-        )
-        return pd.DataFrame(columns=["symbol", "score"])
+            "score_dispersion": score_dispersion,
+            "top_minus_median": top_minus_median,
+            "quality_ok": False,
+            "score_corr": corr_scores,
+            "overlap_topn": overlap_pct,
+            "trend_shortlist_size": shortlist_size,
+        }
+    )
+    print(
+        f"{pd.Timestamp(week_date)} "
+        f"universe={len(week_df)}, eligible={len(df)}, selected=0, cash=1.0, quality_ok=False, "
+        f"score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}, "
+        f"score_corr={corr_scores if not np.isnan(corr_scores) else 'nan'}, "
+        f"overlap_topn={overlap_pct if not np.isnan(overlap_pct) else 'nan'}, "
+        f"trend_shortlist_size={shortlist_size}"
+    )
+    return pd.DataFrame(columns=["symbol", "score"])
 
     top = df.nlargest(cfg.top_n, "score")
     selected_count = len(top)
@@ -275,12 +327,18 @@ def select_portfolio(
             "score_dispersion": score_dispersion,
             "top_minus_median": top_minus_median,
             "quality_ok": True,
+            "score_corr": corr_scores,
+            "overlap_topn": overlap_pct,
+            "trend_shortlist_size": shortlist_size,
         }
     )
     print(
         f"{pd.Timestamp(week_date)} "
         f"universe={len(week_df)}, eligible={len(df)}, selected={selected_count}, cash={cash_w:.2f}, "
-        f"quality_ok=True, score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}"
+        f"quality_ok=True, score_std={score_dispersion:.4f}, top_minus_median={top_minus_median:.4f}, "
+        f"score_corr={corr_scores if not np.isnan(corr_scores) else 'nan'}, "
+        f"overlap_topn={overlap_pct if not np.isnan(overlap_pct) else 'nan'}, "
+        f"trend_shortlist_size={shortlist_size}"
     )
     return top[["score"]]
 
@@ -335,7 +393,8 @@ def simulate(
     features: pd.DataFrame,
     ohlcv: pd.DataFrame,
     cfg: Config,
-    frozen_features: List[str],
+    frozen_features_mr: List[str],
+    frozen_features_trend: List[str],
     directions: Dict[str, int],
     gate_only: List[str],
     risk_veto: List[str],
@@ -429,7 +488,16 @@ def simulate(
 
         # New selection for next period
         selection = select_portfolio(
-            reb_date, week_slice, cfg, frozen_features, directions, gate_only, risk_veto, gate_thresholds, summary_records
+            reb_date,
+            week_slice,
+            cfg,
+            frozen_features_mr,
+            frozen_features_trend,
+            directions,
+            gate_only,
+            risk_veto,
+            gate_thresholds,
+            summary_records,
         )
         if selection.empty:
             prev_weights = {}
@@ -615,6 +683,11 @@ def parse_args() -> Config:
     ap.add_argument("--veto-thresholds", type=str, default=None, help="Comma thresholds e.g. hist_vol_20d=0.75")
     ap.add_argument("--quality-thresholds", type=str, default=None, help="Comma thresholds e.g. min_eligible=5,score_std=0.08,top_minus_median=0.10")
     ap.add_argument("--out-dir", type=Path, default=Path("results"))
+    ap.add_argument("--composite-mode", type=str, default="blend", choices=["trend4w", "mr1w", "blend"])
+    ap.add_argument("--w1", type=float, default=0.6, help="Weight for MR(1W) score in blend mode.")
+    ap.add_argument("--w4", type=float, default=0.4, help="Weight for Trend(4W) score in blend mode.")
+    ap.add_argument("--selection-mode", type=str, default="trend_confirmed_mr", choices=["trend_confirmed_mr"])
+    ap.add_argument("--trend-shortlist-size", type=int, default=30, help="Top-M shortlist by trend before MR rank.")
     args = ap.parse_args()
     start = pd.to_datetime(args.start)
     end = pd.to_datetime(args.end)
@@ -649,6 +722,11 @@ def parse_args() -> Config:
         veto_thresholds_str=args.veto_thresholds,
         quality_thresholds_str=args.quality_thresholds,
         out_dir=str(args.out_dir) if args.out_dir else None,
+        composite_mode=args.composite_mode,
+        w1=args.w1,
+        w4=args.w4,
+        selection_mode=args.selection_mode,
+        trend_shortlist_size=args.trend_shortlist_size,
     )
 
 
@@ -672,15 +750,21 @@ def main() -> None:
         qr_window = qr[(pd.to_datetime(qr["week_date"]) >= cfg.start) & (pd.to_datetime(qr["week_date"]) <= cfg.end)]
         qr_window.to_csv(out_base / "quarantine_bad_close_weeks_window.csv", index=False)
     ohlcv = load_ohlcv(cfg.ohlcv_path)
-    if cfg.score_horizon == "1w":
-        frozen_path = cfg.frozen_1w or cfg.frozen_features_path
-        default_gate_only = ["volume_zscore_20d"]
-        default_risk_veto = ["hist_vol_60d"]
-    else:
-        frozen_path = cfg.frozen_4w or cfg.frozen_features_path
-        default_gate_only = ["adx_14", "turnover_ratio_20d"]
-        default_risk_veto = ["hist_vol_20d"]
-    frozen = load_frozen_features(frozen_path)
+    frozen_path_1w = cfg.frozen_1w or cfg.frozen_features_path
+    frozen_path_4w = cfg.frozen_4w or cfg.frozen_features_path
+    frozen_mr = load_frozen_features(frozen_path_1w)
+    frozen_trend = load_frozen_features(frozen_path_4w)
+
+    # Ensure required lists exist based on composite mode
+    if cfg.composite_mode == "mr1w" and not frozen_mr:
+        raise RuntimeError("Composite mode mr1w selected but frozen 1W feature list is empty.")
+    if cfg.composite_mode == "trend4w" and not frozen_trend:
+        raise RuntimeError("Composite mode trend4w selected but frozen 4W feature list is empty.")
+    if cfg.composite_mode == "blend" and (not frozen_mr or not frozen_trend):
+        raise RuntimeError("Blend mode requires both 1W and 4W frozen feature lists.")
+
+    default_gate_only = ["volume_zscore_20d"] if cfg.composite_mode == "mr1w" else ["adx_14", "turnover_ratio_20d"]
+    default_risk_veto = ["hist_vol_60d"] if cfg.composite_mode == "mr1w" else ["hist_vol_20d"]
     gate_only = cfg.gate_only if cfg.gate_only is not None else default_gate_only
     risk_veto = cfg.risk_veto if cfg.risk_veto is not None else default_risk_veto
     gate_defaults = {
@@ -702,7 +786,17 @@ def main() -> None:
     quality_thresholds = parse_thresholds(cfg.quality_thresholds_str, quality_defaults)
     directions = load_manifest(cfg.manifest)
 
-    equity, trades, holdings, summary_df = simulate(features, ohlcv, cfg, frozen, directions, gate_only, risk_veto, gate_thresholds)
+    equity, trades, holdings, summary_df = simulate(
+        features,
+        ohlcv,
+        cfg,
+        frozen_mr,
+        frozen_trend,
+        directions,
+        gate_only,
+        risk_veto,
+        gate_thresholds,
+    )
     metrics = compute_metrics(equity, trades, holdings, cfg)
 
     out_base = Path(cfg.out_dir) if cfg.out_dir else RESULTS_DIR
